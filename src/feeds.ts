@@ -12,10 +12,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchFeedXml(url: string): Promise<string> {
+async function fetchFeedXml(url: string): Promise<{ body: string; finalUrl: string }> {
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
     const res = await fetch(url, { headers: FETCH_HEADERS });
-    if (res.ok) return res.text();
+    if (res.ok) return { body: await res.text(), finalUrl: res.url || url };
 
     const retryable = res.status === 429 || res.status >= 500;
     if (!retryable || attempt === MAX_FETCH_ATTEMPTS) {
@@ -54,14 +54,14 @@ async function discoverFeedUrl(html: string, pageUrl: string): Promise<string | 
 }
 
 async function fetchAndParseFeed(url: string): Promise<{ feedUrl: string; parsed: ReturnType<typeof parseFeed> }> {
-  const body = await fetchFeedXml(url);
+  const { body, finalUrl } = await fetchFeedXml(url);
   try {
-    return { feedUrl: url, parsed: parseFeed(body) };
+    return { feedUrl: finalUrl, parsed: parseFeed(body) };
   } catch (err) {
-    const discovered = await discoverFeedUrl(body, url);
+    const discovered = await discoverFeedUrl(body, finalUrl);
     if (!discovered) throw err;
-    const discoveredBody = await fetchFeedXml(discovered);
-    return { feedUrl: discovered, parsed: parseFeed(discoveredBody) };
+    const { body: discoveredBody, finalUrl: discoveredFinalUrl } = await fetchFeedXml(discovered);
+    return { feedUrl: discoveredFinalUrl, parsed: parseFeed(discoveredBody) };
   }
 }
 
@@ -110,8 +110,8 @@ export async function addFeed(db: D1Database, inputUrl: string) {
 
 export async function refreshFeed(db: D1Database, feed: { id: number; url: string }) {
   try {
-    const xml = await fetchFeedXml(feed.url);
-    const parsed = parseFeed(xml);
+    const { body } = await fetchFeedXml(feed.url);
+    const parsed = parseFeed(body);
     const newArticles = await upsertArticles(db, feed.id, parsed.articles);
     await db
       .prepare(`UPDATE feeds SET last_fetched_at = datetime('now'), last_status = 'ok' WHERE id = ?`)

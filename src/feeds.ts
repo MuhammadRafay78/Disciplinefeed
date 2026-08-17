@@ -1,14 +1,31 @@
 import { parseFeed, sanitizeHtml, type ParsedArticle } from "./parse";
 
 const FETCH_HEADERS = {
-  "User-Agent": "DisciplineFeedBot/1.0 (+personal RSS reader)",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
 };
 
+const MAX_FETCH_ATTEMPTS = 3;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchFeedXml(url: string): Promise<string> {
-  const res = await fetch(url, { headers: FETCH_HEADERS });
-  if (!res.ok) throw new Error(`HTTP ${res.status} fetching feed`);
-  return res.text();
+  for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
+    const res = await fetch(url, { headers: FETCH_HEADERS });
+    if (res.ok) return res.text();
+
+    const retryable = res.status === 429 || res.status >= 500;
+    if (!retryable || attempt === MAX_FETCH_ATTEMPTS) {
+      throw new Error(`HTTP ${res.status} fetching feed`);
+    }
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const delayMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** (attempt - 1);
+    await sleep(delayMs);
+  }
+  throw new Error("Failed to fetch feed");
 }
 
 async function upsertArticles(db: D1Database, feedId: number, articles: ParsedArticle[]): Promise<number> {

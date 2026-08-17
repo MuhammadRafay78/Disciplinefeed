@@ -26,6 +26,9 @@ app.post("/api/feeds", async (c) => {
     if (message.includes("UNIQUE constraint")) {
       return c.json({ error: "This feed is already in your list" }, 409);
     }
+    if (message.includes("HTTP 429")) {
+      return c.json({ error: "The source is rate-limiting us right now — wait a moment and try again" }, 429);
+    }
     return c.json({ error: message }, 422);
   }
 });

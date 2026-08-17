@@ -4,13 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DisciplineFeed</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;0,8..60,700;1,8..60,400&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <div class="app">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <h1>DisciplineFeed</h1>
+        <div class="brand">
+          <span class="brand-mark">D</span>
+          <h1>DisciplineFeed</h1>
+        </div>
         <button id="refreshAllBtn" class="icon-btn" title="Refresh all feeds">⟳</button>
       </div>
 
@@ -22,12 +31,15 @@
 
       <nav class="feed-list">
         <button class="feed-item active" data-feed-id="">
+          <span class="feed-icon">◆</span>
           <span>All articles</span>
         </button>
         <button class="feed-item" data-feed-id="" data-filter="unread">
+          <span class="feed-icon">●</span>
           <span>Unread</span>
         </button>
         <button class="feed-item" data-feed-id="" data-filter="saved">
+          <span class="feed-icon">★</span>
           <span>Saved</span>
         </button>
       </nav>
@@ -39,21 +51,32 @@
     <main class="article-list-pane">
       <div id="articleList" class="article-list"></div>
       <button id="loadMoreBtn" class="load-more-btn" hidden>Load more</button>
-      <p id="emptyState" class="empty-state" hidden>No articles yet — add a feed to get started.</p>
+      <div id="emptyState" class="empty-state" hidden>
+        <p class="empty-state-title">Your feed is empty</p>
+        <p class="empty-state-body">Paste a link to a Substack or blog you read for discipline, focus, or self-improvement — most publications expose an RSS feed at <code>/feed</code>.</p>
+      </div>
     </main>
 
     <section class="reader-pane">
-      <div id="readerEmpty" class="reader-empty">Select an article to read</div>
+      <div id="readerEmpty" class="reader-empty">
+        <p>Select an article to start reading</p>
+      </div>
       <article id="reader" class="reader" hidden>
         <header>
           <h2 id="readerTitle"></h2>
           <div class="reader-meta">
-            <span id="readerFeed"></span>
+            <span id="readerFeed" class="reader-meta-feed"></span>
+            <span class="reader-meta-dot">·</span>
             <span id="readerAuthor"></span>
+            <span class="reader-meta-dot">·</span>
             <span id="readerDate"></span>
+            <span class="reader-meta-dot">·</span>
+            <span id="readerReadingTime"></span>
           </div>
           <div class="reader-actions">
-            <button id="saveBtn" class="icon-btn" title="Save">☆</button>
+            <button id="saveBtn" class="save-btn" title="Save">
+              <span class="save-icon">☆</span> Save
+            </button>
             <a id="readerSourceLink" href="#" target="_blank" rel="noopener noreferrer">Open original ↗</a>
           </div>
         </header>

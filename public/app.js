@@ -21,10 +21,23 @@ const els = {
   readerFeed: document.getElementById("readerFeed"),
   readerAuthor: document.getElementById("readerAuthor"),
   readerDate: document.getElementById("readerDate"),
+  readerReadingTime: document.getElementById("readerReadingTime"),
   readerSourceLink: document.getElementById("readerSourceLink"),
   readerBody: document.getElementById("readerBody"),
   saveBtn: document.getElementById("saveBtn"),
 };
+
+const AVATAR_COLORS = ["#a8542e", "#4a6d5c", "#7a5ca8", "#2e6b8a", "#a8792e", "#8a3f5c", "#3f7a4a"];
+
+function avatarColor(seed) {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+}
+
+function avatarInitial(title) {
+  return (title || "?").trim().charAt(0).toUpperCase();
+}
 
 async function api(path, options) {
   const res = await fetch(path, {
@@ -40,6 +53,24 @@ function formatDate(iso) {
   if (!iso) return "";
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function formatRelative(iso) {
+  if (!iso) return "";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffHrs = diffMs / 3_600_000;
+  if (diffHrs < 1) return "just now";
+  if (diffHrs < 24) return `${Math.floor(diffHrs)}h ago`;
+  const diffDays = diffHrs / 24;
+  if (diffDays < 7) return `${Math.floor(diffDays)}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function estimateReadingTime(html) {
+  const text = (html || "").replace(/<[^>]+>/g, " ");
+  const words = text.split(/\s+/).filter(Boolean).length;
+  const minutes = Math.max(1, Math.round(words / 200));
+  return `${minutes} min read`;
 }
 
 // --- Sidebar (built-in filters + feeds) ---
@@ -66,8 +97,12 @@ async function loadFeeds() {
     const btn = document.createElement("button");
     btn.className = "feed-item";
     btn.classList.toggle("active", state.feedId === feed.id);
-    btn.innerHTML = `<span>${escapeHtml(feed.title)}</span><button class="remove-feed" title="Unsubscribe">✕</button>`;
-    btn.querySelector("span").onclick = () => setFilter(feed.id, null);
+    btn.innerHTML = `
+      <span class="feed-avatar" style="background:${avatarColor(feed.title)}">${avatarInitial(feed.title)}</span>
+      <span>${escapeHtml(feed.title)}</span>
+      <button class="remove-feed" title="Unsubscribe">✕</button>
+    `;
+    btn.querySelector("span:not(.feed-avatar)").onclick = () => setFilter(feed.id, null);
     btn.querySelector(".remove-feed").onclick = async (e) => {
       e.stopPropagation();
       if (!confirm(`Remove "${feed.title}" and its articles?`)) return;
@@ -143,7 +178,7 @@ function renderArticleList(articles, append) {
     item.innerHTML = `
       <div class="article-source">
         ${a.is_read ? "" : '<span class="unread-dot"></span>'}
-        <span>${escapeHtml(a.feed_title)} · ${formatDate(a.published_at)}</span>
+        <span>${escapeHtml(a.feed_title)} · ${formatRelative(a.published_at)}</span>
       </div>
       <p class="article-title">${escapeHtml(a.title)}</p>
       <p class="article-summary">${escapeHtml(a.summary || "")}</p>
@@ -187,13 +222,18 @@ async function selectArticle(id) {
   els.readerDate.textContent = formatDate(article.published_at);
   els.readerSourceLink.href = article.url;
   els.readerBody.innerHTML = article.content_html || `<p>${escapeHtml(article.summary || "No preview available.")}</p>`;
-  els.saveBtn.textContent = article.is_saved ? "★" : "☆";
-  els.saveBtn.classList.toggle("active", !!article.is_saved);
+  els.readerReadingTime.textContent = estimateReadingTime(article.content_html || article.summary);
+  updateSaveBtn(!!article.is_saved);
   els.saveBtn.onclick = async () => {
     const res = await api(`/api/articles/${id}/save`, { method: "POST" });
-    els.saveBtn.textContent = res.is_saved ? "★" : "☆";
-    els.saveBtn.classList.toggle("active", res.is_saved);
+    updateSaveBtn(res.is_saved);
   };
+}
+
+function updateSaveBtn(saved) {
+  els.saveBtn.querySelector(".save-icon").textContent = saved ? "★" : "☆";
+  els.saveBtn.lastChild.textContent = saved ? " Saved" : " Save";
+  els.saveBtn.classList.toggle("active", saved);
 }
 
 function escapeHtml(str) {

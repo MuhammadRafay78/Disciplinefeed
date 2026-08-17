@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DisciplineFeed</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1>DisciplineFeed</h1>
+        <button id="refreshAllBtn" class="icon-btn" title="Refresh all feeds">⟳</button>
+      </div>
+
+      <form id="addFeedForm" class="add-feed-form">
+        <input id="feedUrlInput" type="url" placeholder="Paste a Substack/RSS URL…" required />
+        <button type="submit">Add</button>
+      </form>
+      <p id="addFeedError" class="error-text" hidden></p>
+
+      <nav class="feed-list">
+        <button class="feed-item active" data-feed-id="">
+          <span>All articles</span>
+        </button>
+        <button class="feed-item" data-feed-id="" data-filter="unread">
+          <span>Unread</span>
+        </button>
+        <button class="feed-item" data-feed-id="" data-filter="saved">
+          <span>Saved</span>
+        </button>
+      </nav>
+
+      <div class="feed-list-divider">Subscriptions</div>
+      <nav id="feedList" class="feed-list"></nav>
+    </aside>
+
+    <main class="article-list-pane">
+      <div id="articleList" class="article-list"></div>
+      <button id="loadMoreBtn" class="load-more-btn" hidden>Load more</button>
+      <p id="emptyState" class="empty-state" hidden>No articles yet — add a feed to get started.</p>
+    </main>
+
+    <section class="reader-pane">
+      <div id="readerEmpty" class="reader-empty">Select an article to read</div>
+      <article id="reader" class="reader" hidden>
+        <header>
+          <h2 id="readerTitle"></h2>
+          <div class="reader-meta">
+            <span id="readerFeed"></span>
+            <span id="readerAuthor"></span>
+            <span id="readerDate"></span>
+          </div>
+          <div class="reader-actions">
+            <button id="saveBtn" class="icon-btn" title="Save">☆</button>
+            <a id="readerSourceLink" href="#" target="_blank" rel="noopener noreferrer">Open original ↗</a>
+          </div>
+        </header>
+        <div id="readerBody" class="reader-body"></div>
+      </article>
+    </section>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

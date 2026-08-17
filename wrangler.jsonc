@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "disciplinefeed",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "disciplinefeed-db",
+      "database_id": "96dd94e8-1677-4f3b-8ef1-ca6a1fa651d1"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

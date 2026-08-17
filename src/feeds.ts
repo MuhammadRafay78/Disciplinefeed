@@ -28,6 +28,43 @@ async function fetchFeedXml(url: string): Promise<string> {
   throw new Error("Failed to fetch feed");
 }
 
+const FEED_LINK_TYPES = ["application/rss+xml", "application/atom+xml"];
+
+async function discoverFeedUrl(html: string, pageUrl: string): Promise<string | null> {
+  let found: string | null = null;
+  const rewriter = new HTMLRewriter().on("link", {
+    element(el) {
+      if (found) return;
+      const rel = (el.getAttribute("rel") ?? "").toLowerCase();
+      const type = (el.getAttribute("type") ?? "").toLowerCase();
+      const href = el.getAttribute("href");
+      if (rel === "alternate" && href && FEED_LINK_TYPES.includes(type)) {
+        found = href;
+      }
+    },
+  });
+  await rewriter.transform(new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } })).text();
+  if (!found) return null;
+  try {
+    const resolved = new URL(found, pageUrl).toString();
+    return resolved === pageUrl ? null : resolved;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchAndParseFeed(url: string): Promise<{ feedUrl: string; parsed: ReturnType<typeof parseFeed> }> {
+  const body = await fetchFeedXml(url);
+  try {
+    return { feedUrl: url, parsed: parseFeed(body) };
+  } catch (err) {
+    const discovered = await discoverFeedUrl(body, url);
+    if (!discovered) throw err;
+    const discoveredBody = await fetchFeedXml(discovered);
+    return { feedUrl: discovered, parsed: parseFeed(discoveredBody) };
+  }
+}
+
 async function upsertArticles(db: D1Database, feedId: number, articles: ParsedArticle[]): Promise<number> {
   let newCount = 0;
   for (const article of articles) {
@@ -55,9 +92,8 @@ async function upsertArticles(db: D1Database, feedId: number, articles: ParsedAr
   return newCount;
 }
 
-export async function addFeed(db: D1Database, feedUrl: string) {
-  const xml = await fetchFeedXml(feedUrl);
-  const parsed = parseFeed(xml);
+export async function addFeed(db: D1Database, inputUrl: string) {
+  const { feedUrl, parsed } = await fetchAndParseFeed(inputUrl);
 
   const insertFeed = await db
     .prepare(

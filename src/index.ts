@@ -77,7 +77,7 @@ app.get("/api/articles", async (c) => {
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const query = `
-    SELECT a.id, a.feed_id, a.title, a.url, a.author, a.published_at, a.summary, a.is_read, a.is_saved, f.title AS feed_title
+    SELECT a.id, a.feed_id, a.title, a.url, a.author, a.published_at, a.summary, a.is_read, a.is_saved, a.progress, f.title AS feed_title
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
     ${where}
@@ -109,6 +109,17 @@ app.get("/api/articles/:id", async (c) => {
   return c.json(article);
 });
 
+app.patch("/api/articles/:id/progress", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ progress?: number }>().catch(() => ({}) as { progress?: number });
+  if (typeof body.progress !== "number" || Number.isNaN(body.progress)) {
+    return c.json({ error: "progress must be a number between 0 and 1" }, 400);
+  }
+  const progress = Math.min(1, Math.max(0, body.progress));
+  await c.env.DB.prepare("UPDATE articles SET progress = ? WHERE id = ?").bind(progress, id).run();
+  return c.json({ ok: true, progress });
+});
+
 app.post("/api/articles/:id/save", async (c) => {
   const id = Number(c.req.param("id"));
   const article = await c.env.DB.prepare("SELECT is_saved FROM articles WHERE id = ?")
@@ -118,6 +129,49 @@ app.post("/api/articles/:id/save", async (c) => {
   const nextVal = article.is_saved ? 0 : 1;
   await c.env.DB.prepare("UPDATE articles SET is_saved = ? WHERE id = ?").bind(nextVal, id).run();
   return c.json({ is_saved: !!nextVal });
+});
+
+app.get("/api/highlights", async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT * FROM highlights ORDER BY id ASC").all();
+  return c.json(results);
+});
+
+interface HighlightBody {
+  text?: string;
+  articleId?: number;
+  articleTitle?: string;
+  articleUrl?: string;
+  feedTitle?: string;
+}
+
+app.post("/api/highlights", async (c) => {
+  const body = await c.req.json<HighlightBody>().catch(() => ({}) as HighlightBody);
+  const text = body.text?.trim();
+  if (!text) return c.json({ error: "Text is required" }, 400);
+  const result = await c.env.DB.prepare(
+    `INSERT INTO highlights (text, article_id, article_title, article_url, feed_title)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(text, body.articleId ?? null, body.articleTitle ?? null, body.articleUrl ?? null, body.feedTitle ?? null)
+    .run();
+  const id = Number(result.meta.last_row_id);
+  const created = await c.env.DB.prepare("SELECT * FROM highlights WHERE id = ?").bind(id).first();
+  return c.json(created, 201);
+});
+
+app.patch("/api/highlights/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ text?: string }>().catch(() => ({}) as { text?: string });
+  const text = body.text?.trim();
+  if (!text) return c.json({ error: "Text is required" }, 400);
+  await c.env.DB.prepare("UPDATE highlights SET text = ? WHERE id = ?").bind(text, id).run();
+  return c.json({ ok: true });
+});
+
+app.delete("/api/highlights/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  await c.env.DB.prepare("DELETE FROM highlights WHERE id = ?").bind(id).run();
+  return c.json({ ok: true });
 });
 
 export default {

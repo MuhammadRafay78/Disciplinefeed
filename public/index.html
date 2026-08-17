@@ -13,6 +13,13 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <div class="mobile-topbar">
+    <button id="mobileMenuBtn" class="icon-btn" aria-label="Menu">☰</button>
+    <button id="mobileBackBtn" class="icon-btn" aria-label="Back" hidden>←</button>
+    <span id="mobileTitle" class="mobile-title">DisciplineFeed</span>
+  </div>
+  <div id="mobileBackdrop" class="mobile-backdrop" hidden></div>
+
   <div class="app">
     <aside class="sidebar">
       <div class="sidebar-header">
@@ -42,13 +49,17 @@
           <span class="feed-icon">★</span>
           <span>Saved</span>
         </button>
+        <button class="feed-item" id="myListNavBtn">
+          <span class="feed-icon">✎</span>
+          <span>My List</span>
+        </button>
       </nav>
 
       <div class="feed-list-divider">Subscriptions</div>
       <nav id="feedList" class="feed-list"></nav>
     </aside>
 
-    <main class="article-list-pane">
+    <main id="articleListPane" class="article-list-pane">
       <div id="articleList" class="article-list"></div>
       <button id="loadMoreBtn" class="load-more-btn" hidden>Load more</button>
       <div id="emptyState" class="empty-state" hidden>
@@ -57,7 +68,8 @@
       </div>
     </main>
 
-    <section class="reader-pane">
+    <section id="readerPane" class="reader-pane">
+      <div class="reader-progress-bar"><div id="readerProgressFill" class="reader-progress-fill"></div></div>
       <div id="readerEmpty" class="reader-empty">
         <p>Select an article to start reading</p>
       </div>
@@ -82,6 +94,22 @@
         </header>
         <div id="readerBody" class="reader-body"></div>
       </article>
+    </section>
+
+    <section id="notebookPane" class="notebook-pane" hidden>
+      <div class="notebook-header">
+        <h2>My List</h2>
+        <p class="notebook-subtitle">Snippets you've selected while reading, plus anything you jot down yourself — edit freely to shape your script.</p>
+      </div>
+      <form id="notebookAddForm" class="notebook-add-form">
+        <textarea id="notebookAddInput" placeholder="Write something…" rows="2"></textarea>
+        <button type="submit">Add</button>
+      </form>
+      <div id="notebookList" class="notebook-list"></div>
+      <div id="notebookEmpty" class="empty-state" hidden>
+        <p class="empty-state-title">Nothing here yet</p>
+        <p class="empty-state-body">Select text while reading an article and click "Add to my list", or jot a note above.</p>
+      </div>
     </section>
   </div>
 

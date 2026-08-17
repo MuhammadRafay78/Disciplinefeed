@@ -20,9 +20,22 @@ CREATE TABLE IF NOT EXISTS articles (
   content_html TEXT,
   is_read INTEGER NOT NULL DEFAULT 0,
   is_saved INTEGER NOT NULL DEFAULT 0,
+  progress REAL NOT NULL DEFAULT 0,
   fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(feed_id, guid)
 );
 
 CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_feed ON articles(feed_id);
+
+-- Snippets the user selects from articles, plus freeform notes, for drafting scripts.
+-- No FK to articles: notes should survive even if the source feed/article is later removed.
+CREATE TABLE IF NOT EXISTS highlights (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  text TEXT NOT NULL,
+  article_id INTEGER,
+  article_title TEXT,
+  article_url TEXT,
+  feed_title TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

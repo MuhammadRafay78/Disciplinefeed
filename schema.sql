@@ -39,3 +39,10 @@ CREATE TABLE IF NOT EXISTS highlights (
   feed_title TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Keywords the user wants "badass" articles surfaced for, across all subscriptions.
+CREATE TABLE IF NOT EXISTS topics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  keyword TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

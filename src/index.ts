@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { addFeed, refreshAllFeeds, refreshFeed } from "./feeds";
+import { likePattern, scoreArticle } from "./discover";
 
 interface Bindings {
   DB: D1Database;
@@ -174,6 +175,67 @@ app.delete("/api/highlights/:id", async (c) => {
   const id = Number(c.req.param("id"));
   await c.env.DB.prepare("DELETE FROM highlights WHERE id = ?").bind(id).run();
   return c.json({ ok: true });
+});
+
+app.get("/api/topics", async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT * FROM topics ORDER BY created_at ASC").all();
+  return c.json(results);
+});
+
+app.post("/api/topics", async (c) => {
+  const body = await c.req.json<{ keyword?: string }>().catch(() => ({}) as { keyword?: string });
+  const keyword = body.keyword?.trim().toLowerCase();
+  if (!keyword) return c.json({ error: "A topic keyword is required" }, 400);
+  try {
+    const result = await c.env.DB.prepare("INSERT INTO topics (keyword) VALUES (?)").bind(keyword).run();
+    const id = Number(result.meta.last_row_id);
+    const created = await c.env.DB.prepare("SELECT * FROM topics WHERE id = ?").bind(id).first();
+    return c.json(created, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to add topic";
+    if (message.includes("UNIQUE constraint")) {
+      return c.json({ error: "You're already tracking this topic" }, 409);
+    }
+    return c.json({ error: message }, 422);
+  }
+});
+
+app.delete("/api/topics/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  await c.env.DB.prepare("DELETE FROM topics WHERE id = ?").bind(id).run();
+  return c.json({ ok: true });
+});
+
+app.get("/api/discover", async (c) => {
+  const { results: topicRows } = await c.env.DB.prepare("SELECT keyword FROM topics").all<{ keyword: string }>();
+  const keywords = topicRows.map((t) => t.keyword);
+  if (keywords.length === 0) return c.json({ articles: [], topics: [] });
+
+  const conditions = keywords.map(() => "(a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\')");
+  const params: unknown[] = [];
+  for (const keyword of keywords) {
+    const pattern = likePattern(keyword);
+    params.push(pattern, pattern);
+  }
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT a.id, a.feed_id, a.title, a.url, a.author, a.published_at, a.summary, a.is_read, a.is_saved, a.progress, f.title AS feed_title
+     FROM articles a
+     JOIN feeds f ON f.id = a.feed_id
+     WHERE ${conditions.join(" OR ")}
+     ORDER BY a.id DESC
+     LIMIT 400`,
+  )
+    .bind(...params)
+    .all<{ id: number; title: string; summary: string | null }>();
+
+  const ranked = results
+    .map((article) => ({ ...article, score: scoreArticle(article, keywords) }))
+    .filter((article) => article.score > 0)
+    .sort((a, b) => b.score - a.score || b.id - a.id)
+    .slice(0, 50);
+
+  return c.json({ articles: ranked, topics: keywords });
 });
 
 export default {

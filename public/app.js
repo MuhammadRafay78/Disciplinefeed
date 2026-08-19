@@ -1,5 +1,5 @@
 const state = {
-  view: "feed", // 'feed' | 'notebook'
+  view: "feed", // 'feed' | 'notebook' | 'discover'
   feedId: null,
   filter: null, // 'unread' | 'saved' | null
   cursor: null,
@@ -49,6 +49,12 @@ const els = {
   readerBody: document.getElementById("readerBody"),
   saveBtn: document.getElementById("saveBtn"),
   myListNavBtn: document.getElementById("myListNavBtn"),
+  discoverNavBtn: document.getElementById("discoverNavBtn"),
+  topicsBar: document.getElementById("topicsBar"),
+  topicAddForm: document.getElementById("topicAddForm"),
+  topicAddInput: document.getElementById("topicAddInput"),
+  topicChips: document.getElementById("topicChips"),
+  discoverEmptyState: document.getElementById("discoverEmptyState"),
   notebookPane: document.getElementById("notebookPane"),
   notebookAddForm: document.getElementById("notebookAddForm"),
   notebookAddInput: document.getElementById("notebookAddInput"),
@@ -119,6 +125,12 @@ function renderStaticFilters() {
     setView("notebook");
     enterMobileScreen("notebook", "My List");
   };
+  els.discoverNavBtn.onclick = () => {
+    flushProgress();
+    setView("discover");
+    loadArticles(true);
+    enterMobileScreen("list", "Discover");
+  };
   updateStaticFilterActive();
 }
 
@@ -129,16 +141,20 @@ function updateStaticFilterActive() {
   items[1].classList.toggle("active", inFeed && state.feedId === null && state.filter === "unread");
   items[2].classList.toggle("active", inFeed && state.feedId === null && state.filter === "saved");
   els.myListNavBtn.classList.toggle("active", state.view === "notebook");
+  els.discoverNavBtn.classList.toggle("active", state.view === "discover");
 }
 
 // --- View switching (feed vs. notebook) + mobile single-pane navigation ---
 
 function setView(view) {
   state.view = view;
-  els.articleListPane.hidden = view !== "feed";
-  els.readerPane.hidden = view !== "feed";
+  const inFeedLike = view === "feed" || view === "discover";
+  els.articleListPane.hidden = !inFeedLike;
+  els.readerPane.hidden = !inFeedLike;
   els.notebookPane.hidden = view !== "notebook";
+  els.topicsBar.hidden = view !== "discover";
   if (view === "notebook") loadHighlights();
+  if (view === "discover") loadTopics();
   updateStaticFilterActive();
 }
 
@@ -241,6 +257,17 @@ async function loadArticles(reset) {
     state.articles = [];
     els.articleList.innerHTML = "";
   }
+
+  if (state.view === "discover") {
+    const data = await api("/api/discover");
+    state.articles = data.articles;
+    renderArticleList(data.articles, false);
+    els.loadMoreBtn.hidden = true;
+    els.emptyState.hidden = true;
+    els.discoverEmptyState.hidden = data.articles.length > 0;
+    return;
+  }
+
   const params = new URLSearchParams();
   if (state.feedId) params.set("feed_id", state.feedId);
   if (state.filter === "unread") params.set("unread", "true");
@@ -252,6 +279,7 @@ async function loadArticles(reset) {
   state.cursor = data.nextCursor;
   renderArticleList(data.articles, !reset);
   els.loadMoreBtn.hidden = data.nextCursor === null;
+  els.discoverEmptyState.hidden = true;
   els.emptyState.hidden = state.articles.length > 0;
 }
 
@@ -262,10 +290,12 @@ function renderArticleList(articles, append) {
     item.className = `article-item ${a.is_read ? "read" : ""}`;
     item.dataset.id = a.id;
     item.classList.toggle("selected", state.selectedId === a.id);
+    const scoreBadge = state.view === "discover" ? `<span class="discover-score">🔥 ${a.score}</span>` : "";
     item.innerHTML = `
       <div class="article-source">
         ${a.is_read ? "" : '<span class="unread-dot"></span>'}
         <span>${escapeHtml(a.feed_title)} · ${formatRelative(a.published_at)}</span>
+        ${scoreBadge}
       </div>
       <p class="article-title">${escapeHtml(a.title)}</p>
       <p class="article-summary">${escapeHtml(a.summary || "")}</p>
@@ -284,6 +314,42 @@ els.refreshAllBtn.addEventListener("click", async () => {
     await loadArticles(true);
   } finally {
     els.refreshAllBtn.classList.remove("active");
+  }
+});
+
+// --- Discover (topic-ranked "badass articles" across all subscriptions) ---
+
+async function loadTopics() {
+  const topics = await api("/api/topics");
+  renderTopicChips(topics);
+}
+
+function renderTopicChips(topics) {
+  els.topicChips.innerHTML = "";
+  for (const t of topics) {
+    const chip = document.createElement("span");
+    chip.className = "topic-chip";
+    chip.innerHTML = `<span>${escapeHtml(t.keyword)}</span><button title="Stop tracking">✕</button>`;
+    chip.querySelector("button").onclick = async () => {
+      await api(`/api/topics/${t.id}`, { method: "DELETE" });
+      chip.remove();
+      loadArticles(true);
+    };
+    els.topicChips.appendChild(chip);
+  }
+}
+
+els.topicAddForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const keyword = els.topicAddInput.value.trim();
+  if (!keyword) return;
+  try {
+    await api("/api/topics", { method: "POST", body: JSON.stringify({ keyword }) });
+    els.topicAddInput.value = "";
+    await loadTopics();
+    await loadArticles(true);
+  } catch (err) {
+    alert(err.message);
   }
 });
 

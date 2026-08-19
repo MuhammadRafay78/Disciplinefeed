@@ -71,6 +71,18 @@ function asArray<T>(val: T | T[] | undefined): T[] {
   return Array.isArray(val) ? val : [val];
 }
 
+// A malicious feed could set <link> to a javascript:/data: URI; that value ends up as an
+// <a href> in the reader UI, so only ever accept http(s) links out of feed XML.
+function safeHttpUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function parseFeed(xml: string): ParsedFeed {
   const doc = parser.parse(xml);
 
@@ -79,9 +91,9 @@ export function parseFeed(xml: string): ParsedFeed {
     const items = asArray<Record<string, unknown>>(channel.item);
     return {
       title: textOf(channel.title) ?? "Untitled feed",
-      siteUrl: linkOf(channel.link),
+      siteUrl: safeHttpUrl(linkOf(channel.link)),
       articles: items.map((item): ParsedArticle => {
-        const url = linkOf(item.link) ?? "";
+        const url = safeHttpUrl(linkOf(item.link)) ?? "";
         return {
           guid: textOf(item.guid) ?? url ?? textOf(item.title) ?? crypto.randomUUID(),
           title: textOf(item.title) ?? "Untitled",
@@ -100,9 +112,9 @@ export function parseFeed(xml: string): ParsedFeed {
     const entries = asArray<Record<string, unknown>>(feed.entry);
     return {
       title: textOf(feed.title) ?? "Untitled feed",
-      siteUrl: linkOf(feed.link),
+      siteUrl: safeHttpUrl(linkOf(feed.link)),
       articles: entries.map((entry): ParsedArticle => {
-        const url = linkOf(entry.link) ?? "";
+        const url = safeHttpUrl(linkOf(entry.link)) ?? "";
         const authorObj = entry.author as Record<string, unknown> | undefined;
         return {
           guid: textOf(entry.id) ?? url ?? crypto.randomUUID(),

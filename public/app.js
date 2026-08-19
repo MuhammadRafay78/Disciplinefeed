@@ -309,7 +309,7 @@ async function selectArticle(id) {
   els.readerFeed.textContent = article.feed_title;
   els.readerAuthor.textContent = article.author || "";
   els.readerDate.textContent = formatDate(article.published_at);
-  els.readerSourceLink.href = article.url;
+  els.readerSourceLink.href = isSafeHttpUrl(article.url) ? article.url : "#";
   els.readerBody.innerHTML = article.content_html || `<p>${escapeHtml(article.summary || "No preview available.")}</p>`;
   els.readerReadingTime.textContent = estimateReadingTime(article.content_html || article.summary);
   updateSaveBtn(!!article.is_saved);
@@ -350,6 +350,14 @@ function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str ?? "";
   return div.innerHTML;
+}
+
+function isSafeHttpUrl(url) {
+  try {
+    return ["http:", "https:"].includes(new URL(url, location.href).protocol);
+  } catch {
+    return false;
+  }
 }
 
 // --- My List (highlights + freeform notes) ---

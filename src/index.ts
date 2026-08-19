@@ -35,8 +35,10 @@ app.post("/api/feeds", async (c) => {
 
 app.delete("/api/feeds/:id", async (c) => {
   const id = Number(c.req.param("id"));
-  await c.env.DB.prepare("DELETE FROM articles WHERE feed_id = ?").bind(id).run();
-  await c.env.DB.prepare("DELETE FROM feeds WHERE id = ?").bind(id).run();
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM articles WHERE feed_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM feeds WHERE id = ?").bind(id),
+  ]);
   return c.json({ ok: true });
 });
 

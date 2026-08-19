@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS articles (
   is_read INTEGER NOT NULL DEFAULT 0,
   is_saved INTEGER NOT NULL DEFAULT 0,
   progress REAL NOT NULL DEFAULT 0,
+  progress_updated_at TEXT,
   fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(feed_id, guid)
 );

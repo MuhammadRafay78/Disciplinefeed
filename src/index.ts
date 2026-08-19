@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { addFeed, refreshAllFeeds, refreshFeed } from "./feeds";
 import { likePattern, scoreArticle } from "./discover";
+import { findSubstackPublicationsForTopic } from "./discoverSources";
 
 interface Bindings {
   DB: D1Database;
@@ -62,6 +63,7 @@ app.get("/api/articles", async (c) => {
   const feedId = c.req.query("feed_id");
   const unread = c.req.query("unread");
   const savedOnly = c.req.query("saved");
+  const inProgress = c.req.query("in_progress");
   const cursor = c.req.query("cursor");
   const limit = Math.min(Number(c.req.query("limit") ?? 30) || 30, 100);
 
@@ -73,18 +75,20 @@ app.get("/api/articles", async (c) => {
   }
   if (unread === "true") conditions.push("a.is_read = 0");
   if (savedOnly === "true") conditions.push("a.is_saved = 1");
+  if (inProgress === "true") conditions.push("a.progress > 0.02 AND a.progress < 0.95");
   if (cursor) {
     conditions.push("a.id < ?");
     params.push(Number(cursor));
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const orderBy = inProgress === "true" ? "a.progress_updated_at DESC" : "a.id DESC";
   const query = `
     SELECT a.id, a.feed_id, a.title, a.url, a.author, a.published_at, a.summary, a.is_read, a.is_saved, a.progress, f.title AS feed_title
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
     ${where}
-    ORDER BY a.id DESC
+    ORDER BY ${orderBy}
     LIMIT ?
   `;
   params.push(limit + 1);
@@ -119,7 +123,9 @@ app.patch("/api/articles/:id/progress", async (c) => {
     return c.json({ error: "progress must be a number between 0 and 1" }, 400);
   }
   const progress = Math.min(1, Math.max(0, body.progress));
-  await c.env.DB.prepare("UPDATE articles SET progress = ? WHERE id = ?").bind(progress, id).run();
+  await c.env.DB.prepare("UPDATE articles SET progress = ?, progress_updated_at = datetime('now') WHERE id = ?")
+    .bind(progress, id)
+    .run();
   return c.json({ ok: true, progress });
 });
 
@@ -236,6 +242,30 @@ app.get("/api/discover", async (c) => {
     .slice(0, 50);
 
   return c.json({ articles: ranked, topics: keywords });
+});
+
+app.get("/api/discover/sources", async (c) => {
+  const topic = c.req.query("topic")?.trim();
+  if (!topic) return c.json({ error: "A topic is required" }, 400);
+
+  try {
+    const found = await findSubstackPublicationsForTopic(topic);
+    const { results: existing } = await c.env.DB.prepare("SELECT url FROM feeds").all<{ url: string }>();
+    const existingHosts = new Set(
+      existing.map((f) => {
+        try {
+          return new URL(f.url).host.replace(/^www\./, "");
+        } catch {
+          return f.url;
+        }
+      }),
+    );
+    const sources = found.filter((s) => !existingHosts.has(new URL(s.feedUrl).host.replace(/^www\./, "")));
+    return c.json({ topic, sources });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Substack search failed";
+    return c.json({ error: message }, 502);
+  }
 });
 
 export default {

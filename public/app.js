@@ -17,7 +17,9 @@ function flushProgress() {
   if (!pendingProgress) return;
   const { id, value } = pendingProgress;
   pendingProgress = null;
-  api(`/api/articles/${id}/progress`, { method: "PATCH", body: JSON.stringify({ progress: value }) }).catch(() => {});
+  api(`/api/articles/${id}/progress`, { method: "PATCH", body: JSON.stringify({ progress: value }) })
+    .then(loadContinueReading)
+    .catch(() => {});
 }
 
 function scheduleProgressSave(id, value) {
@@ -28,6 +30,8 @@ function scheduleProgressSave(id, value) {
 
 const els = {
   feedList: document.getElementById("feedList"),
+  continueReadingSection: document.getElementById("continueReadingSection"),
+  continueReadingList: document.getElementById("continueReadingList"),
   addFeedForm: document.getElementById("addFeedForm"),
   feedUrlInput: document.getElementById("feedUrlInput"),
   addFeedError: document.getElementById("addFeedError"),
@@ -55,6 +59,7 @@ const els = {
   topicAddInput: document.getElementById("topicAddInput"),
   topicChips: document.getElementById("topicChips"),
   discoverEmptyState: document.getElementById("discoverEmptyState"),
+  sourceSuggestions: document.getElementById("sourceSuggestions"),
   notebookPane: document.getElementById("notebookPane"),
   notebookAddForm: document.getElementById("notebookAddForm"),
   notebookAddInput: document.getElementById("notebookAddInput"),
@@ -214,6 +219,35 @@ async function loadFeeds() {
   }
 }
 
+async function loadContinueReading() {
+  const data = await api("/api/articles?in_progress=true&limit=5");
+  renderContinueReading(data.articles);
+}
+
+function renderContinueReading(articles) {
+  els.continueReadingSection.hidden = articles.length === 0;
+  els.continueReadingList.innerHTML = "";
+  for (const a of articles) {
+    const btn = document.createElement("button");
+    btn.className = "feed-item continue-reading-item";
+    btn.title = `${a.feed_title} — ${Math.round(a.progress * 100)}% read`;
+    btn.innerHTML = `
+      <span class="feed-icon">◐</span>
+      <span>${escapeHtml(a.title)}</span>
+      <span class="continue-progress">${Math.round(a.progress * 100)}%</span>
+    `;
+    btn.onclick = () => {
+      flushProgress();
+      setView("feed");
+      state.feedId = null;
+      state.filter = null;
+      updateStaticFilterActive();
+      selectArticle(a.id);
+    };
+    els.continueReadingList.appendChild(btn);
+  }
+}
+
 function setFilter(feedId, filter) {
   flushProgress();
   setView("feed");
@@ -320,6 +354,8 @@ els.refreshAllBtn.addEventListener("click", async () => {
 // --- Discover (topic-ranked "badass articles" across all subscriptions) ---
 
 async function loadTopics() {
+  els.sourceSuggestions.hidden = true;
+  els.sourceSuggestions.innerHTML = "";
   const topics = await api("/api/topics");
   renderTopicChips(topics);
 }
@@ -329,14 +365,68 @@ function renderTopicChips(topics) {
   for (const t of topics) {
     const chip = document.createElement("span");
     chip.className = "topic-chip";
-    chip.innerHTML = `<span>${escapeHtml(t.keyword)}</span><button title="Stop tracking">✕</button>`;
-    chip.querySelector("button").onclick = async () => {
+    chip.innerHTML = `
+      <span>${escapeHtml(t.keyword)}</span>
+      <button class="chip-find" title="Find new Substacks for &quot;${escapeHtml(t.keyword)}&quot;">🔍</button>
+      <button class="chip-remove" title="Stop tracking">✕</button>
+    `;
+    chip.querySelector(".chip-find").onclick = () => findSources(t.keyword);
+    chip.querySelector(".chip-remove").onclick = async () => {
       await api(`/api/topics/${t.id}`, { method: "DELETE" });
       chip.remove();
       loadArticles(true);
     };
     els.topicChips.appendChild(chip);
   }
+}
+
+async function findSources(topic) {
+  els.sourceSuggestions.hidden = false;
+  els.sourceSuggestions.innerHTML = `<p class="source-status">Searching Substack for "${escapeHtml(topic)}"…</p>`;
+  try {
+    const data = await api(`/api/discover/sources?topic=${encodeURIComponent(topic)}`);
+    renderSourceSuggestions(topic, data.sources);
+  } catch (err) {
+    els.sourceSuggestions.innerHTML = `<p class="source-status error">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function renderSourceSuggestions(topic, sources) {
+  if (!sources.length) {
+    els.sourceSuggestions.innerHTML = `<p class="source-status">No new Substacks found for "${escapeHtml(topic)}". Try a broader topic.</p>`;
+    return;
+  }
+  els.sourceSuggestions.innerHTML = `<p class="source-status">Substacks for "${escapeHtml(topic)}":</p>`;
+  const list = document.createElement("div");
+  list.className = "source-list";
+  for (const s of sources) {
+    const card = document.createElement("div");
+    card.className = "source-card";
+    card.innerHTML = `
+      <div class="source-info">
+        <p class="source-title">${escapeHtml(s.title)}</p>
+        <p class="source-desc">${escapeHtml(s.description || s.siteUrl)}</p>
+      </div>
+      <button class="source-subscribe">+ Subscribe</button>
+    `;
+    const btn = card.querySelector(".source-subscribe");
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Adding…";
+      try {
+        await api("/api/feeds", { method: "POST", body: JSON.stringify({ url: s.feedUrl }) });
+        btn.textContent = "Added ✓";
+        await loadFeeds();
+        if (state.view === "discover") await loadArticles(true);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "+ Subscribe";
+        alert(err.message);
+      }
+    });
+    list.appendChild(card);
+  }
+  els.sourceSuggestions.appendChild(list);
 }
 
 els.topicAddForm.addEventListener("submit", async (e) => {
@@ -552,3 +642,4 @@ initSelectionCapture();
 enterMobileScreen("list", "DisciplineFeed");
 loadFeeds();
 loadArticles(true);
+loadContinueReading();

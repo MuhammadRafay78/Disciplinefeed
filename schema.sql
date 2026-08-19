@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS articles (
   is_read INTEGER NOT NULL DEFAULT 0,
   is_saved INTEGER NOT NULL DEFAULT 0,
   progress REAL NOT NULL DEFAULT 0,
+  progress_updated_at TEXT,
   fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(feed_id, guid)
 );
@@ -37,5 +38,12 @@ CREATE TABLE IF NOT EXISTS highlights (
   article_title TEXT,
   article_url TEXT,
   feed_title TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Keywords the user wants "badass" articles surfaced for, across all subscriptions.
+CREATE TABLE IF NOT EXISTS topics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  keyword TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

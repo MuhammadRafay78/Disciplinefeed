@@ -46,8 +46,9 @@ async function discoverFeedUrl(html: string, pageUrl: string): Promise<string | 
   await rewriter.transform(new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } })).text();
   if (!found) return null;
   try {
-    const resolved = new URL(found, pageUrl).toString();
-    return resolved === pageUrl ? null : resolved;
+    const resolved = new URL(found, pageUrl);
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") return null;
+    return resolved.toString() === pageUrl ? null : resolved.toString();
   } catch {
     return null;
   }
@@ -66,30 +67,33 @@ async function fetchAndParseFeed(url: string): Promise<{ feedUrl: string; parsed
 }
 
 async function upsertArticles(db: D1Database, feedId: number, articles: ParsedArticle[]): Promise<number> {
-  let newCount = 0;
-  for (const article of articles) {
-    if (!article.url) continue;
-    const contentHtml = article.contentHtml ? await sanitizeHtml(article.contentHtml) : null;
-    const result = await db
-      .prepare(
-        `INSERT INTO articles (feed_id, guid, title, url, author, published_at, summary, content_html)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(feed_id, guid) DO NOTHING`,
-      )
-      .bind(
-        feedId,
-        article.guid,
-        article.title,
-        article.url,
-        article.author ?? null,
-        article.publishedAt ?? null,
-        article.summary ?? null,
-        contentHtml,
-      )
-      .run();
-    if (result.meta.changes > 0) newCount++;
-  }
-  return newCount;
+  const withUrl = articles.filter((a) => a.url);
+  if (withUrl.length === 0) return 0;
+
+  const statements = await Promise.all(
+    withUrl.map(async (article) => {
+      const contentHtml = article.contentHtml ? await sanitizeHtml(article.contentHtml) : null;
+      return db
+        .prepare(
+          `INSERT INTO articles (feed_id, guid, title, url, author, published_at, summary, content_html)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(feed_id, guid) DO NOTHING`,
+        )
+        .bind(
+          feedId,
+          article.guid,
+          article.title,
+          article.url,
+          article.author ?? null,
+          article.publishedAt ?? null,
+          article.summary ?? null,
+          contentHtml,
+        );
+    }),
+  );
+
+  const results = await db.batch(statements);
+  return results.reduce((count, r) => count + (r.meta.changes > 0 ? 1 : 0), 0);
 }
 
 export async function addFeed(db: D1Database, inputUrl: string) {
@@ -128,14 +132,23 @@ export async function refreshFeed(db: D1Database, feed: { id: number; url: strin
   }
 }
 
+const REFRESH_CONCURRENCY = 5;
+
 export async function refreshAllFeeds(db: D1Database) {
   const { results } = await db.prepare("SELECT id, url FROM feeds").all<{ id: number; url: string }>();
-  let totalNew = 0;
   const details: Array<{ feedId: number; newArticles: number; error?: string }> = [];
-  for (const feed of results) {
-    const r = await refreshFeed(db, feed);
-    totalNew += r.newArticles;
-    details.push({ feedId: feed.id, newArticles: r.newArticles, error: r.error });
+
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < results.length) {
+      const feed = results[nextIndex++];
+      const r = await refreshFeed(db, feed);
+      details.push({ feedId: feed.id, newArticles: r.newArticles, error: r.error });
+    }
   }
+  const workerCount = Math.min(REFRESH_CONCURRENCY, results.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+
+  const totalNew = details.reduce((sum, d) => sum + d.newArticles, 0);
   return { totalNew, details };
 }

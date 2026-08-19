@@ -53,18 +53,39 @@
           <span class="feed-icon">✎</span>
           <span>My List</span>
         </button>
+        <button class="feed-item" id="discoverNavBtn">
+          <span class="feed-icon">⚡</span>
+          <span>Discover</span>
+        </button>
       </nav>
+
+      <div id="continueReadingSection" hidden>
+        <div class="feed-list-divider">Continue Reading</div>
+        <nav id="continueReadingList" class="feed-list"></nav>
+      </div>
 
       <div class="feed-list-divider">Subscriptions</div>
       <nav id="feedList" class="feed-list"></nav>
     </aside>
 
     <main id="articleListPane" class="article-list-pane">
+      <div id="topicsBar" class="topics-bar" hidden>
+        <form id="topicAddForm" class="topic-add-form">
+          <input id="topicAddInput" type="text" placeholder="Add a topic, e.g. discipline" maxlength="40" required />
+          <button type="submit">Track</button>
+        </form>
+        <div id="topicChips" class="topic-chips"></div>
+        <div id="sourceSuggestions" class="source-suggestions" hidden></div>
+      </div>
       <div id="articleList" class="article-list"></div>
       <button id="loadMoreBtn" class="load-more-btn" hidden>Load more</button>
       <div id="emptyState" class="empty-state" hidden>
         <p class="empty-state-title">Your feed is empty</p>
         <p class="empty-state-body">Paste a link to a Substack or blog you read for discipline, focus, or self-improvement — most publications expose an RSS feed at <code>/feed</code>.</p>
+      </div>
+      <div id="discoverEmptyState" class="empty-state" hidden>
+        <p class="empty-state-title">No badass articles yet</p>
+        <p class="empty-state-body">Track a topic above (like "discipline"). Matching articles from your subscriptions — ranked by relevance — will show up here.</p>
       </div>
     </main>
 

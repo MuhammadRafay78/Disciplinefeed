@@ -44,14 +44,31 @@ const SUBSTACK_HEADERS = {
 // Substack category, so when a topic doesn't literally match a category name we fall back
 // to browsing the categories most likely to contain that kind of writing.
 const FALLBACK_CATEGORY_SLUGS = ["health", "business", "philosophy", "education"];
-const MAX_CATEGORIES = 4;
-const PAGES_PER_CATEGORY = 4;
+// Kept modest: Cloudflare Workers' shared egress IPs get rate-limited by Substack much
+// more aggressively than a residential/dev network, so fewer requests per search = fewer 429s.
+const MAX_CATEGORIES = 3;
+const PAGES_PER_CATEGORY = 2;
 const MAX_RESULTS = 20;
+const MAX_FETCH_ATTEMPTS = 3;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: SUBSTACK_HEADERS });
-  if (!res.ok) throw new Error(`Substack request failed (HTTP ${res.status})`);
-  return res.json<T>();
+  for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
+    const res = await fetch(url, { headers: SUBSTACK_HEADERS });
+    if (res.ok) return res.json<T>();
+
+    const retryable = res.status === 429 || res.status >= 500;
+    if (!retryable || attempt === MAX_FETCH_ATTEMPTS) {
+      throw new Error(`Substack request failed (HTTP ${res.status})`);
+    }
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const delayMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 400 * 2 ** (attempt - 1);
+    await sleep(delayMs);
+  }
+  throw new Error("Substack request failed");
 }
 
 function matchingCategoryIds(categories: SubstackCategory[], topic: string): Array<number | string> {

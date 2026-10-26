@@ -8,6 +8,9 @@ export interface ParsedArticle {
   publishedAt?: string;
   summary?: string;
   contentHtml?: string;
+  // ISO timestamp the article is ordered by: its publish date, clamped to "now" so a feed with
+  // bogus future dates can't pin itself to the top, or "now" when the feed gives no date.
+  sortAt: string;
 }
 
 export interface ParsedFeed {
@@ -56,6 +59,10 @@ function parseDate(s?: string): string | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
+export function sortKeyFor(publishedAt: string | undefined, nowIso: string): string {
+  return publishedAt && publishedAt < nowIso ? publishedAt : nowIso;
+}
+
 function stripHtml(s?: string): string | undefined {
   if (!s) return undefined;
   const text = s
@@ -83,8 +90,9 @@ function safeHttpUrl(url: string | undefined): string | undefined {
   }
 }
 
-export function parseFeed(xml: string): ParsedFeed {
+export function parseFeed(xml: string, now: Date = new Date()): ParsedFeed {
   const doc = parser.parse(xml);
+  const nowIso = now.toISOString();
 
   if (doc.rss?.channel) {
     const channel = doc.rss.channel;
@@ -94,14 +102,16 @@ export function parseFeed(xml: string): ParsedFeed {
       siteUrl: safeHttpUrl(linkOf(channel.link)),
       articles: items.map((item): ParsedArticle => {
         const url = safeHttpUrl(linkOf(item.link)) ?? "";
+        const publishedAt = parseDate(textOf(item.pubDate));
         return {
           guid: textOf(item.guid) ?? url ?? textOf(item.title) ?? crypto.randomUUID(),
           title: textOf(item.title) ?? "Untitled",
           url,
           author: textOf(item["dc:creator"]) ?? textOf(item.author),
-          publishedAt: parseDate(textOf(item.pubDate)),
+          publishedAt,
           summary: stripHtml(textOf(item.description)),
           contentHtml: textOf(item["content:encoded"]) ?? textOf(item.description),
+          sortAt: sortKeyFor(publishedAt, nowIso),
         };
       }),
     };
@@ -116,14 +126,16 @@ export function parseFeed(xml: string): ParsedFeed {
       articles: entries.map((entry): ParsedArticle => {
         const url = safeHttpUrl(linkOf(entry.link)) ?? "";
         const authorObj = entry.author as Record<string, unknown> | undefined;
+        const publishedAt = parseDate(textOf(entry.published) ?? textOf(entry.updated));
         return {
           guid: textOf(entry.id) ?? url ?? crypto.randomUUID(),
           title: textOf(entry.title) ?? "Untitled",
           url,
           author: authorObj ? textOf(authorObj.name) : undefined,
-          publishedAt: parseDate(textOf(entry.published) ?? textOf(entry.updated)),
+          publishedAt,
           summary: stripHtml(textOf(entry.summary)),
           contentHtml: textOf(entry.content) ?? textOf(entry.summary),
+          sortAt: sortKeyFor(publishedAt, nowIso),
         };
       }),
     };
@@ -132,7 +144,50 @@ export function parseFeed(xml: string): ParsedFeed {
   throw new Error("Unrecognized feed format (not RSS 2.0 or Atom)");
 }
 
-const DANGEROUS_TAGS = ["script", "style", "iframe", "object", "embed", "link", "meta", "form", "base", "applet"];
+// svg/math are dropped wholesale: their xlink:href and <animate>/<set> elements offer ways to
+// smuggle in a javascript: URL that per-attribute checks can't reliably catch.
+const DANGEROUS_TAGS = [
+  "script",
+  "style",
+  "iframe",
+  "frame",
+  "frameset",
+  "object",
+  "embed",
+  "link",
+  "meta",
+  "form",
+  "base",
+  "applet",
+  "svg",
+  "math",
+];
+
+// Attributes a browser may load or navigate to as a URL.
+const URL_ATTRS = new Set(["href", "src", "xlink:href", "action", "formaction", "poster", "background", "data", "cite"]);
+const SAFE_URL_SCHEMES = new Set(["http", "https", "mailto", "tel"]);
+
+function decodeCodePoint(n: number): string {
+  return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "\uFFFD";
+}
+
+// HTMLRewriter hands us attribute values still entity-encoded, while the browser decodes them and
+// drops tabs/newlines before resolving the URL, so "jav&#x61;script:" or "java\tscript:" would slip
+// past a naive prefix check and run as javascript:. Normalize the way the browser does, then allow
+// only relative URLs or an explicit list of schemes.
+export function isSafeContentUrl(raw: string, allowDataImage = false): boolean {
+  const normalized = raw
+    .replace(/&#x([0-9a-f]+);?/gi, (_, hex: string) => decodeCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_, dec: string) => decodeCodePoint(Number(dec)))
+    .replace(/&colon;/gi, ":")
+    .replace(/&(tab|newline);/gi, "")
+    .replace(/[\u0000-\u0020\u007f-\u009f]/g, "")
+    .toLowerCase();
+  const scheme = /^([a-z][a-z0-9+.-]*):/.exec(normalized)?.[1];
+  if (!scheme) return true;
+  if (SAFE_URL_SCHEMES.has(scheme)) return true;
+  return allowDataImage && /^data:image\/(png|jpe?g|gif|webp|avif);/.test(normalized);
+}
 
 export async function sanitizeHtml(html: string): Promise<string> {
   let rewriter = new HTMLRewriter();
@@ -143,18 +198,26 @@ export async function sanitizeHtml(html: string): Promise<string> {
       },
     });
   }
-  rewriter = rewriter.on("*", {
-    element(el) {
-      for (const [name, value] of el.attributes) {
-        const lower = name.toLowerCase();
-        if (lower.startsWith("on")) {
-          el.removeAttribute(name);
-        } else if ((lower === "href" || lower === "src") && /^\s*javascript:/i.test(value)) {
-          el.removeAttribute(name);
+  rewriter = rewriter
+    .on("*", {
+      element(el) {
+        for (const [name, value] of el.attributes) {
+          const lower = name.toLowerCase();
+          if (lower.startsWith("on")) {
+            el.removeAttribute(name);
+          } else if (URL_ATTRS.has(lower) && !isSafeContentUrl(value, lower === "src" && el.tagName === "img")) {
+            el.removeAttribute(name);
+          }
         }
-      }
-    },
-  });
+      },
+    })
+    // Links inside an article must never navigate the reader itself away from the app.
+    .on("a", {
+      element(el) {
+        el.setAttribute("target", "_blank");
+        el.setAttribute("rel", "noopener noreferrer");
+      },
+    });
 
   const res = rewriter.transform(new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } }));
   return res.text();

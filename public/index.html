@@ -3,6 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Article bodies are third-party HTML rendered on this origin; the server sanitizes them, and this
+       policy is the backstop: no inline or foreign script, so a missed javascript: URL can't run. -->
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src * data: blob:; media-src *; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'"
+  />
   <title>DisciplineFeed</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -27,7 +33,7 @@
           <span class="brand-mark">D</span>
           <h1>DisciplineFeed</h1>
         </div>
-        <button id="refreshAllBtn" class="icon-btn" title="Refresh all feeds">⟳</button>
+        <button id="refreshAllBtn" class="icon-btn" title="Refresh all feeds (r)">⟳</button>
       </div>
 
       <form id="addFeedForm" class="add-feed-form">
@@ -39,23 +45,24 @@
       <nav class="feed-list">
         <button class="feed-item active" data-feed-id="">
           <span class="feed-icon">◆</span>
-          <span>All articles</span>
+          <span class="feed-label">All articles</span>
         </button>
         <button class="feed-item" data-feed-id="" data-filter="unread">
           <span class="feed-icon">●</span>
-          <span>Unread</span>
+          <span class="feed-label">Unread</span>
+          <span id="unreadTotal" class="nav-count" hidden></span>
         </button>
         <button class="feed-item" data-feed-id="" data-filter="saved">
           <span class="feed-icon">★</span>
-          <span>Saved</span>
+          <span class="feed-label">Saved</span>
         </button>
         <button class="feed-item" id="myListNavBtn">
           <span class="feed-icon">✎</span>
-          <span>My List</span>
+          <span class="feed-label">My List</span>
         </button>
         <button class="feed-item" id="discoverNavBtn">
           <span class="feed-icon">⚡</span>
-          <span>Discover</span>
+          <span class="feed-label">Discover</span>
         </button>
       </nav>
 
@@ -66,9 +73,21 @@
 
       <div class="feed-list-divider">Subscriptions</div>
       <nav id="feedList" class="feed-list"></nav>
+
+      <button id="shortcutsHintBtn" class="shortcuts-hint">Keyboard shortcuts <kbd>?</kbd></button>
     </aside>
 
     <main id="articleListPane" class="article-list-pane">
+      <div class="list-toolbar">
+        <div class="list-heading">
+          <h2 id="listTitle">All articles</h2>
+          <span id="listMeta" class="list-meta"></span>
+        </div>
+        <div id="listActions" class="list-actions">
+          <input id="searchInput" class="search-input" type="search" placeholder="Search titles & summaries…" aria-label="Search articles" />
+          <button id="markAllReadBtn" class="toolbar-btn" title="Mark all as read (Shift+A)">✓ Mark all read</button>
+        </div>
+      </div>
       <div id="topicsBar" class="topics-bar" hidden>
         <form id="topicAddForm" class="topic-add-form">
           <input id="topicAddInput" type="text" placeholder="Add a topic, e.g. discipline" maxlength="40" required />
@@ -82,6 +101,10 @@
       <div id="emptyState" class="empty-state" hidden>
         <p class="empty-state-title">Your feed is empty</p>
         <p class="empty-state-body">Paste a link to a Substack or blog you read for discipline, focus, or self-improvement — most publications expose an RSS feed at <code>/feed</code>.</p>
+      </div>
+      <div id="filteredEmptyState" class="empty-state" hidden>
+        <p id="filteredEmptyTitle" class="empty-state-title">Nothing here</p>
+        <p id="filteredEmptyBody" class="empty-state-body"></p>
       </div>
       <div id="discoverEmptyState" class="empty-state" hidden>
         <p class="empty-state-title">No badass articles yet</p>
@@ -97,20 +120,13 @@
       <article id="reader" class="reader" hidden>
         <header>
           <h2 id="readerTitle"></h2>
-          <div class="reader-meta">
-            <span id="readerFeed" class="reader-meta-feed"></span>
-            <span class="reader-meta-dot">·</span>
-            <span id="readerAuthor"></span>
-            <span class="reader-meta-dot">·</span>
-            <span id="readerDate"></span>
-            <span class="reader-meta-dot">·</span>
-            <span id="readerReadingTime"></span>
-          </div>
+          <div id="readerMeta" class="reader-meta"></div>
           <div class="reader-actions">
-            <button id="saveBtn" class="save-btn" title="Save">
+            <button id="saveBtn" class="pill-btn save-btn" title="Save (s)">
               <span class="save-icon">☆</span> Save
             </button>
-            <a id="readerSourceLink" href="#" target="_blank" rel="noopener noreferrer">Open original ↗</a>
+            <button id="readToggleBtn" class="pill-btn" title="Mark unread (m)">Mark unread</button>
+            <a id="readerSourceLink" href="#" target="_blank" rel="noopener noreferrer" title="Open original (o)">Open original ↗</a>
           </div>
         </header>
         <div id="readerBody" class="reader-body"></div>
@@ -119,8 +135,11 @@
 
     <section id="notebookPane" class="notebook-pane" hidden>
       <div class="notebook-header">
-        <h2>My List</h2>
-        <p class="notebook-subtitle">Snippets you've selected while reading, plus anything you jot down yourself — edit freely to shape your script.</p>
+        <div>
+          <h2>My List</h2>
+          <p class="notebook-subtitle">Snippets you've selected while reading, plus anything you jot down yourself — edit freely to shape your script.</p>
+        </div>
+        <button id="copyAllBtn" class="toolbar-btn" title="Copy every snippet, plus a sources list, to the clipboard">⧉ Copy all</button>
       </div>
       <form id="notebookAddForm" class="notebook-add-form">
         <textarea id="notebookAddInput" placeholder="Write something…" rows="2"></textarea>
@@ -129,9 +148,29 @@
       <div id="notebookList" class="notebook-list"></div>
       <div id="notebookEmpty" class="empty-state" hidden>
         <p class="empty-state-title">Nothing here yet</p>
-        <p class="empty-state-body">Select text while reading an article and click "Add to my list", or jot a note above.</p>
+        <p class="empty-state-body">Select text while reading an article and tap "Add to my list", or jot a note above.</p>
       </div>
     </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <div id="shortcutsDialog" class="dialog-backdrop" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle">
+      <h3 id="shortcutsTitle">Keyboard shortcuts</h3>
+      <dl class="shortcut-list">
+        <dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Next / previous article</dd>
+        <dt><kbd>o</kbd></dt><dd>Open original in a new tab</dd>
+        <dt><kbd>s</kbd></dt><dd>Save / unsave</dd>
+        <dt><kbd>m</kbd></dt><dd>Mark read / unread</dd>
+        <dt><kbd>/</kbd></dt><dd>Search</dd>
+        <dt><kbd>r</kbd></dt><dd>Refresh all feeds</dd>
+        <dt><kbd>Shift</kbd> + <kbd>A</kbd></dt><dd>Mark all as read</dd>
+        <dt><kbd>g</kbd> then <kbd>a</kbd> / <kbd>u</kbd> / <kbd>s</kbd> / <kbd>l</kbd> / <kbd>d</kbd></dt><dd>Go to All / Unread / Saved / My List / Discover</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close / leave search</dd>
+      </dl>
+      <button id="shortcutsCloseBtn" class="toolbar-btn">Close</button>
+    </div>
   </div>
 
   <script src="/app.js"></script>

@@ -1,7 +1,9 @@
 import { Hono } from "hono";
-import { addFeed, refreshAllFeeds, refreshFeed } from "./feeds";
+import { addFeed, FEED_REFRESH_COLUMNS, refreshAllFeeds, refreshFeed, type FeedToRefresh } from "./feeds";
 import { likePattern, scoreArticle } from "./discover";
 import { findSubstackPublicationsForTopic } from "./discoverSources";
+import { decodeCursor, encodeCursor } from "./pagination";
+import { sanitizeHtml } from "./parse";
 
 interface Bindings {
   DB: D1Database;
@@ -10,7 +12,12 @@ interface Bindings {
 const app = new Hono<{ Bindings: Bindings }>();
 
 app.get("/api/feeds", async (c) => {
-  const { results } = await c.env.DB.prepare("SELECT * FROM feeds ORDER BY added_at DESC").all();
+  const { results } = await c.env.DB.prepare(
+    `SELECT f.id, f.url, f.title, f.site_url, f.added_at, f.last_fetched_at, f.last_status,
+       (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_read = 0) AS unread_count
+     FROM feeds f
+     ORDER BY f.added_at DESC`,
+  ).all();
   return c.json(results);
 });
 
@@ -46,9 +53,9 @@ app.delete("/api/feeds/:id", async (c) => {
 
 app.post("/api/feeds/:id/refresh", async (c) => {
   const id = Number(c.req.param("id"));
-  const feed = await c.env.DB.prepare("SELECT id, url FROM feeds WHERE id = ?")
+  const feed = await c.env.DB.prepare(`SELECT ${FEED_REFRESH_COLUMNS} FROM feeds WHERE id = ?`)
     .bind(id)
-    .first<{ id: number; url: string }>();
+    .first<FeedToRefresh>();
   if (!feed) return c.json({ error: "Feed not found" }, 404);
   const result = await refreshFeed(c.env.DB, feed);
   return c.json(result);
@@ -59,11 +66,15 @@ app.post("/api/refresh", async (c) => {
   return c.json(result);
 });
 
+const ARTICLE_LIST_COLUMNS =
+  "a.id, a.feed_id, a.title, a.url, a.author, a.published_at, a.summary, a.is_read, a.is_saved, a.progress, a.sort_at, f.title AS feed_title";
+
 app.get("/api/articles", async (c) => {
   const feedId = c.req.query("feed_id");
   const unread = c.req.query("unread");
   const savedOnly = c.req.query("saved");
-  const inProgress = c.req.query("in_progress");
+  const inProgress = c.req.query("in_progress") === "true";
+  const search = c.req.query("q")?.trim();
   const cursor = c.req.query("cursor");
   const limit = Math.min(Number(c.req.query("limit") ?? 30) || 30, 100);
 
@@ -75,16 +86,23 @@ app.get("/api/articles", async (c) => {
   }
   if (unread === "true") conditions.push("a.is_read = 0");
   if (savedOnly === "true") conditions.push("a.is_saved = 1");
-  if (inProgress === "true") conditions.push("a.progress > 0.02 AND a.progress < 0.95");
-  if (cursor) {
-    conditions.push("a.id < ?");
-    params.push(Number(cursor));
+  if (inProgress) conditions.push("a.progress > 0.02 AND a.progress < 0.95");
+  if (search) {
+    const pattern = likePattern(search);
+    conditions.push("(a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\' OR a.author LIKE ? ESCAPE '\\')");
+    params.push(pattern, pattern, pattern);
+  }
+  if (cursor && !inProgress) {
+    const decoded = decodeCursor(cursor);
+    if (!decoded) return c.json({ error: "Invalid cursor" }, 400);
+    conditions.push("(a.sort_at, a.id) < (?, ?)");
+    params.push(decoded.sortAt, decoded.id);
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const orderBy = inProgress === "true" ? "a.progress_updated_at DESC" : "a.id DESC";
+  const orderBy = inProgress ? "a.progress_updated_at DESC" : "a.sort_at DESC, a.id DESC";
   const query = `
-    SELECT a.id, a.feed_id, a.title, a.url, a.author, a.published_at, a.summary, a.is_read, a.is_saved, a.progress, f.title AS feed_title
+    SELECT ${ARTICLE_LIST_COLUMNS}
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
     ${where}
@@ -93,11 +111,39 @@ app.get("/api/articles", async (c) => {
   `;
   params.push(limit + 1);
 
-  const { results } = await c.env.DB.prepare(query).bind(...params).all<Record<string, unknown>>();
+  type Row = Record<string, unknown> & { id: number; sort_at: string };
+  const listStmt = c.env.DB.prepare(query).bind(...params);
+  // The first page also reports the newest article id that existed when the list was loaded,
+  // so "mark all as read" can't sweep up articles a refresh delivered after the user looked.
+  const [listResult, maxResult] = cursor
+    ? [await listStmt.all<Row>(), null]
+    : await c.env.DB.batch<Record<string, unknown>>([listStmt, c.env.DB.prepare("SELECT MAX(id) AS max_id FROM articles")]);
+  const results = listResult.results as Row[];
   const hasMore = results.length > limit;
   const page = hasMore ? results.slice(0, limit) : results;
-  const nextCursor = hasMore ? (page[page.length - 1] as { id: number }).id : null;
-  return c.json({ articles: page, nextCursor });
+  const last = page[page.length - 1];
+  const nextCursor = hasMore && !inProgress ? encodeCursor(last.sort_at, last.id) : null;
+  const maxId = maxResult ? ((maxResult.results[0]?.max_id as number | null) ?? 0) : undefined;
+  return c.json({ articles: page, nextCursor, maxId });
+});
+
+app.post("/api/articles/mark-all-read", async (c) => {
+  const body = await c.req
+    .json<{ feedId?: number | null; maxId?: number }>()
+    .catch(() => ({}) as { feedId?: number | null; maxId?: number });
+  if (typeof body.maxId !== "number" || !Number.isFinite(body.maxId)) {
+    return c.json({ error: "maxId is required" }, 400);
+  }
+  const conditions = ["is_read = 0", "id <= ?"];
+  const params: unknown[] = [body.maxId];
+  if (typeof body.feedId === "number") {
+    conditions.push("feed_id = ?");
+    params.push(body.feedId);
+  }
+  const result = await c.env.DB.prepare(`UPDATE articles SET is_read = 1 WHERE ${conditions.join(" AND ")}`)
+    .bind(...params)
+    .run();
+  return c.json({ marked: result.meta.changes });
 });
 
 app.get("/api/articles/:id", async (c) => {
@@ -113,7 +159,22 @@ app.get("/api/articles/:id", async (c) => {
   if (!article.is_read) {
     await c.env.DB.prepare("UPDATE articles SET is_read = 1 WHERE id = ?").bind(id).run();
   }
+  // Re-sanitize on the way out too, so rows stored before a sanitizer fix are covered.
+  if (typeof article.content_html === "string") {
+    article.content_html = await sanitizeHtml(article.content_html);
+  }
   return c.json(article);
+});
+
+app.post("/api/articles/:id/read", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ read?: boolean }>().catch(() => ({}) as { read?: boolean });
+  if (typeof body.read !== "boolean") return c.json({ error: "read must be true or false" }, 400);
+  const result = await c.env.DB.prepare("UPDATE articles SET is_read = ? WHERE id = ?")
+    .bind(body.read ? 1 : 0, id)
+    .run();
+  if (result.meta.changes === 0) return c.json({ error: "Article not found" }, 404);
+  return c.json({ is_read: body.read });
 });
 
 app.patch("/api/articles/:id/progress", async (c) => {
@@ -225,11 +286,11 @@ app.get("/api/discover", async (c) => {
   }
 
   const { results } = await c.env.DB.prepare(
-    `SELECT a.id, a.feed_id, a.title, a.url, a.author, a.published_at, a.summary, a.is_read, a.is_saved, a.progress, f.title AS feed_title
+    `SELECT ${ARTICLE_LIST_COLUMNS}
      FROM articles a
      JOIN feeds f ON f.id = a.feed_id
      WHERE ${conditions.join(" OR ")}
-     ORDER BY a.id DESC
+     ORDER BY a.sort_at DESC, a.id DESC
      LIMIT 400`,
   )
     .bind(...params)

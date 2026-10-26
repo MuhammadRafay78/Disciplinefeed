@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS feeds (
   site_url TEXT,
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_fetched_at TEXT,
-  last_status TEXT
+  last_status TEXT,
+  etag TEXT,
+  last_modified TEXT
 );
 
 CREATE TABLE IF NOT EXISTS articles (
@@ -23,11 +25,15 @@ CREATE TABLE IF NOT EXISTS articles (
   progress REAL NOT NULL DEFAULT 0,
   progress_updated_at TEXT,
   fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Publish date clamped to fetch time (see sortKeyFor); what article lists are ordered by.
+  sort_at TEXT,
   UNIQUE(feed_id, guid)
 );
 
 CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_feed ON articles(feed_id);
+CREATE INDEX IF NOT EXISTS idx_articles_sort ON articles(sort_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_articles_feed_sort ON articles(feed_id, sort_at DESC, id DESC);
 
 -- Snippets the user selects from articles, plus freeform notes, for drafting scripts.
 -- No FK to articles: notes should survive even if the source feed/article is later removed.

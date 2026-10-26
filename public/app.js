@@ -2,15 +2,21 @@ const state = {
   view: "feed", // 'feed' | 'notebook' | 'discover'
   feedId: null,
   filter: null, // 'unread' | 'saved' | null
+  query: "",
   cursor: null,
+  maxId: null, // newest article id when the current list was loaded; bounds "mark all read"
   articles: [],
+  feeds: [],
   selectedId: null,
+  loading: false,
 };
 
-let currentArticleContext = null; // {id, title, url, feedTitle} of the article currently open in the reader
+let currentArticle = null; // the article currently open in the reader, as returned by the API
 let readerScrollHandler = null;
 let progressSaveTimer = null;
 let pendingProgress = null; // { id, value }
+let listRequestToken = 0;
+let selectRequestToken = 0;
 
 function flushProgress() {
   clearTimeout(progressSaveTimer);
@@ -30,28 +36,35 @@ function scheduleProgressSave(id, value) {
 
 const els = {
   feedList: document.getElementById("feedList"),
+  unreadTotal: document.getElementById("unreadTotal"),
   continueReadingSection: document.getElementById("continueReadingSection"),
   continueReadingList: document.getElementById("continueReadingList"),
   addFeedForm: document.getElementById("addFeedForm"),
   feedUrlInput: document.getElementById("feedUrlInput"),
   addFeedError: document.getElementById("addFeedError"),
   articleListPane: document.getElementById("articleListPane"),
+  listTitle: document.getElementById("listTitle"),
+  listMeta: document.getElementById("listMeta"),
+  listActions: document.getElementById("listActions"),
+  searchInput: document.getElementById("searchInput"),
+  markAllReadBtn: document.getElementById("markAllReadBtn"),
   articleList: document.getElementById("articleList"),
   loadMoreBtn: document.getElementById("loadMoreBtn"),
   emptyState: document.getElementById("emptyState"),
+  filteredEmptyState: document.getElementById("filteredEmptyState"),
+  filteredEmptyTitle: document.getElementById("filteredEmptyTitle"),
+  filteredEmptyBody: document.getElementById("filteredEmptyBody"),
   refreshAllBtn: document.getElementById("refreshAllBtn"),
   readerPane: document.getElementById("readerPane"),
   readerEmpty: document.getElementById("readerEmpty"),
   reader: document.getElementById("reader"),
   readerTitle: document.getElementById("readerTitle"),
-  readerFeed: document.getElementById("readerFeed"),
-  readerAuthor: document.getElementById("readerAuthor"),
-  readerDate: document.getElementById("readerDate"),
-  readerReadingTime: document.getElementById("readerReadingTime"),
+  readerMeta: document.getElementById("readerMeta"),
   readerProgressFill: document.getElementById("readerProgressFill"),
   readerSourceLink: document.getElementById("readerSourceLink"),
   readerBody: document.getElementById("readerBody"),
   saveBtn: document.getElementById("saveBtn"),
+  readToggleBtn: document.getElementById("readToggleBtn"),
   myListNavBtn: document.getElementById("myListNavBtn"),
   discoverNavBtn: document.getElementById("discoverNavBtn"),
   topicsBar: document.getElementById("topicsBar"),
@@ -65,11 +78,16 @@ const els = {
   notebookAddInput: document.getElementById("notebookAddInput"),
   notebookList: document.getElementById("notebookList"),
   notebookEmpty: document.getElementById("notebookEmpty"),
+  copyAllBtn: document.getElementById("copyAllBtn"),
   mobileMenuBtn: document.getElementById("mobileMenuBtn"),
   mobileBackBtn: document.getElementById("mobileBackBtn"),
   mobileBackdrop: document.getElementById("mobileBackdrop"),
   mobileTitle: document.getElementById("mobileTitle"),
   sidebar: document.querySelector(".sidebar"),
+  toast: document.getElementById("toast"),
+  shortcutsDialog: document.getElementById("shortcutsDialog"),
+  shortcutsHintBtn: document.getElementById("shortcutsHintBtn"),
+  shortcutsCloseBtn: document.getElementById("shortcutsCloseBtn"),
 };
 
 const AVATAR_COLORS = ["#a8542e", "#4a6d5c", "#7a5ca8", "#2e6b8a", "#a8792e", "#8a3f5c", "#3f7a4a"];
@@ -118,6 +136,24 @@ function estimateReadingTime(html) {
   return `${minutes} min read`;
 }
 
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+// --- Toasts (non-blocking feedback in place of alert()) ---
+
+let toastTimer = null;
+
+function toast(message, kind = "info") {
+  els.toast.textContent = message;
+  els.toast.classList.toggle("error", kind === "error");
+  els.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    els.toast.hidden = true;
+  }, kind === "error" ? 5000 : 2600);
+}
+
 // --- Sidebar (built-in filters + feeds) ---
 
 function renderStaticFilters() {
@@ -125,18 +161,22 @@ function renderStaticFilters() {
   items[0].onclick = () => setFilter(null, null);
   items[1].onclick = () => setFilter(null, "unread");
   items[2].onclick = () => setFilter(null, "saved");
-  els.myListNavBtn.onclick = () => {
-    flushProgress();
-    setView("notebook");
-    enterMobileScreen("notebook", "My List");
-  };
-  els.discoverNavBtn.onclick = () => {
-    flushProgress();
-    setView("discover");
-    loadArticles(true);
-    enterMobileScreen("list", "Discover");
-  };
+  els.myListNavBtn.onclick = openNotebook;
+  els.discoverNavBtn.onclick = openDiscover;
   updateStaticFilterActive();
+}
+
+function openNotebook() {
+  flushProgress();
+  setView("notebook");
+  enterMobileScreen("notebook", "My List");
+}
+
+function openDiscover() {
+  flushProgress();
+  setView("discover");
+  loadArticles(true);
+  enterMobileScreen("list", "Discover");
 }
 
 function updateStaticFilterActive() {
@@ -147,6 +187,9 @@ function updateStaticFilterActive() {
   items[2].classList.toggle("active", inFeed && state.feedId === null && state.filter === "saved");
   els.myListNavBtn.classList.toggle("active", state.view === "notebook");
   els.discoverNavBtn.classList.toggle("active", state.view === "discover");
+  els.feedList.querySelectorAll(".feed-row").forEach((row) => {
+    row.querySelector(".feed-item").classList.toggle("active", inFeed && Number(row.dataset.feedId) === state.feedId);
+  });
 }
 
 // --- View switching (feed vs. notebook) + mobile single-pane navigation ---
@@ -161,6 +204,7 @@ function setView(view) {
   if (view === "notebook") loadHighlights();
   if (view === "discover") loadTopics();
   updateStaticFilterActive();
+  updateListHeader();
 }
 
 function enterMobileScreen(screen, title) {
@@ -191,32 +235,61 @@ els.mobileBackBtn.addEventListener("click", () => {
   if (state.view === "notebook") {
     setFilter(null, null);
   } else {
-    enterMobileScreen("list", "DisciplineFeed");
+    enterMobileScreen("list", listTitleText());
   }
 });
 
 async function loadFeeds() {
-  const feeds = await api("/api/feeds");
+  state.feeds = await api("/api/feeds");
+  renderFeeds();
+}
+
+function renderFeeds() {
   els.feedList.innerHTML = "";
-  for (const feed of feeds) {
-    const btn = document.createElement("button");
-    btn.className = "feed-item";
-    btn.classList.toggle("active", state.feedId === feed.id);
-    btn.innerHTML = `
-      <span class="feed-avatar" style="background:${avatarColor(feed.title)}">${avatarInitial(feed.title)}</span>
-      <span>${escapeHtml(feed.title)}</span>
-      <button class="remove-feed" title="Unsubscribe">✕</button>
+  for (const feed of state.feeds) {
+    const row = document.createElement("div");
+    row.className = "feed-row";
+    row.dataset.feedId = feed.id;
+    const failing = feed.last_status && feed.last_status !== "ok";
+    const errorDetail = failing ? feed.last_status.replace(/^error:\s*/, "") : "";
+    row.innerHTML = `
+      <button class="feed-item">
+        <span class="feed-avatar" style="background:${avatarColor(feed.title)}">${escapeHtml(avatarInitial(feed.title))}</span>
+        <span class="feed-label">${escapeHtml(feed.title)}</span>
+        ${failing ? `<span class="feed-error" title="Last refresh failed: ${escapeHtml(errorDetail)}">!</span>` : ""}
+        ${feed.unread_count > 0 ? `<span class="nav-count">${feed.unread_count}</span>` : ""}
+      </button>
+      <button class="remove-feed" title="Unsubscribe" aria-label="Unsubscribe from ${escapeHtml(feed.title)}">✕</button>
     `;
-    btn.querySelector("span:not(.feed-avatar)").onclick = () => setFilter(feed.id, null);
-    btn.querySelector(".remove-feed").onclick = async (e) => {
-      e.stopPropagation();
+    row.querySelector(".feed-item").onclick = () => setFilter(feed.id, null);
+    row.querySelector(".remove-feed").onclick = async () => {
       if (!confirm(`Remove "${feed.title}" and its articles?`)) return;
-      await api(`/api/feeds/${feed.id}`, { method: "DELETE" });
+      try {
+        await api(`/api/feeds/${feed.id}`, { method: "DELETE" });
+      } catch (err) {
+        toast(err.message, "error");
+        return;
+      }
+      toast(`Unsubscribed from ${feed.title}`);
+      await loadFeeds();
       if (state.feedId === feed.id) setFilter(null, null);
-      else loadFeeds();
+      else if (state.view !== "notebook") loadArticles(true);
     };
-    els.feedList.appendChild(btn);
+    els.feedList.appendChild(row);
   }
+  const totalUnread = state.feeds.reduce((sum, f) => sum + (f.unread_count || 0), 0);
+  els.unreadTotal.textContent = totalUnread;
+  els.unreadTotal.hidden = totalUnread === 0;
+  updateStaticFilterActive();
+  updateListHeader();
+}
+
+// Keeps sidebar badges in step with read/unread changes without refetching every feed.
+function adjustUnread(feedId, delta) {
+  const feed = state.feeds.find((f) => f.id === feedId);
+  if (!feed) return;
+  feed.unread_count = Math.max(0, (feed.unread_count || 0) + delta);
+  renderFeeds();
 }
 
 async function loadContinueReading() {
@@ -233,32 +306,34 @@ function renderContinueReading(articles) {
     btn.title = `${a.feed_title} — ${Math.round(a.progress * 100)}% read`;
     btn.innerHTML = `
       <span class="feed-icon">◐</span>
-      <span>${escapeHtml(a.title)}</span>
+      <span class="feed-label">${escapeHtml(a.title)}</span>
       <span class="continue-progress">${Math.round(a.progress * 100)}%</span>
     `;
-    btn.onclick = () => {
-      flushProgress();
-      setView("feed");
-      state.feedId = null;
-      state.filter = null;
-      updateStaticFilterActive();
-      selectArticle(a.id);
-    };
+    btn.onclick = () => openArticleOutsideList(a.id);
     els.continueReadingList.appendChild(btn);
   }
 }
 
+// Opens an article from somewhere other than the article list (Continue Reading, My List).
+function openArticleOutsideList(id) {
+  flushProgress();
+  if (state.view !== "feed") {
+    // The list pane may still hold Discover results; show the feed list its header now claims.
+    setView("feed");
+    loadArticles(true);
+  }
+  return selectArticle(id);
+}
+
 function setFilter(feedId, filter) {
   flushProgress();
-  setView("feed");
   state.feedId = feedId;
   state.filter = filter;
-  updateStaticFilterActive();
-  document
-    .querySelectorAll("#feedList .feed-item")
-    .forEach((el) => el.classList.toggle("active", feedId !== null));
+  state.query = "";
+  els.searchInput.value = "";
+  setView("feed");
   loadArticles(true);
-  enterMobileScreen("list", "DisciplineFeed");
+  enterMobileScreen("list", listTitleText());
 }
 
 // --- Add feed ---
@@ -270,34 +345,80 @@ els.addFeedForm.addEventListener("submit", async (e) => {
   els.addFeedError.hidden = true;
   const submitBtn = els.addFeedForm.querySelector("button");
   submitBtn.disabled = true;
+  submitBtn.textContent = "Adding…";
   try {
-    await api("/api/feeds", { method: "POST", body: JSON.stringify({ url }) });
+    const result = await api("/api/feeds", { method: "POST", body: JSON.stringify({ url }) });
     els.feedUrlInput.value = "";
+    toast(`Subscribed to ${result.title} · ${plural(result.newArticles, "article")}`);
     await loadFeeds();
-    await loadArticles(true);
+    setFilter(result.feedId, null);
   } catch (err) {
     els.addFeedError.textContent = err.message;
     els.addFeedError.hidden = false;
   } finally {
     submitBtn.disabled = false;
+    submitBtn.textContent = "Add";
   }
 });
 
 // --- Article list ---
 
-async function loadArticles(reset) {
-  if (reset) {
-    state.cursor = null;
-    state.articles = [];
-    els.articleList.innerHTML = "";
-  }
+function listTitleText() {
+  if (state.view === "discover") return "Discover";
+  if (state.feedId !== null) return state.feeds.find((f) => f.id === state.feedId)?.title ?? "Subscription";
+  if (state.filter === "unread") return "Unread";
+  if (state.filter === "saved") return "Saved";
+  return "All articles";
+}
 
+function unreadInScope() {
+  if (state.feedId !== null) return state.feeds.find((f) => f.id === state.feedId)?.unread_count ?? 0;
+  return state.feeds.reduce((sum, f) => sum + (f.unread_count || 0), 0);
+}
+
+function updateListHeader() {
+  els.listTitle.textContent = listTitleText();
+  const inFeed = state.view === "feed";
+  els.listActions.hidden = !inFeed;
+  const canMarkAll = inFeed && state.filter !== "saved" && !state.query;
+  els.markAllReadBtn.hidden = !canMarkAll;
+  els.markAllReadBtn.disabled = unreadInScope() === 0;
+  if (!inFeed) {
+    els.listMeta.textContent = "";
+  } else if (state.query) {
+    els.listMeta.textContent = `Results for “${state.query}”`;
+  } else if (state.filter === "saved") {
+    els.listMeta.textContent = "";
+  } else {
+    const unread = unreadInScope();
+    els.listMeta.textContent = unread ? `${unread} unread` : "All caught up";
+  }
+}
+
+async function loadArticles(reset) {
+  const token = reset ? ++listRequestToken : listRequestToken;
+  if (!reset && state.loading) return;
+  state.loading = true;
+  try {
+    await fetchArticlePage(reset, token);
+  } catch (err) {
+    if (token === listRequestToken) toast(err.message, "error");
+  } finally {
+    if (token === listRequestToken) state.loading = false;
+  }
+}
+
+async function fetchArticlePage(reset, token) {
   if (state.view === "discover") {
     const data = await api("/api/discover");
+    if (token !== listRequestToken) return;
+    state.cursor = null;
+    state.maxId = null;
     state.articles = data.articles;
     renderArticleList(data.articles, false);
     els.loadMoreBtn.hidden = true;
     els.emptyState.hidden = true;
+    els.filteredEmptyState.hidden = true;
     els.discoverEmptyState.hidden = data.articles.length > 0;
     return;
   }
@@ -306,15 +427,44 @@ async function loadArticles(reset) {
   if (state.feedId) params.set("feed_id", state.feedId);
   if (state.filter === "unread") params.set("unread", "true");
   if (state.filter === "saved") params.set("saved", "true");
-  if (state.cursor) params.set("cursor", state.cursor);
+  if (state.query) params.set("q", state.query);
+  if (!reset && state.cursor) params.set("cursor", state.cursor);
 
   const data = await api(`/api/articles?${params.toString()}`);
+  // A newer list request (filter change, new search keystroke) superseded this one.
+  if (token !== listRequestToken) return;
+  if (reset) {
+    state.articles = [];
+    state.maxId = data.maxId ?? null;
+    els.articleListPane.scrollTop = 0;
+  }
   state.articles.push(...data.articles);
   state.cursor = data.nextCursor;
   renderArticleList(data.articles, !reset);
   els.loadMoreBtn.hidden = data.nextCursor === null;
   els.discoverEmptyState.hidden = true;
-  els.emptyState.hidden = state.articles.length > 0;
+  const empty = state.articles.length === 0;
+  els.emptyState.hidden = !(empty && state.feeds.length === 0);
+  els.filteredEmptyState.hidden = !(empty && state.feeds.length > 0);
+  if (empty) renderFilteredEmptyState();
+  updateListHeader();
+}
+
+function renderFilteredEmptyState() {
+  let title = "No articles yet";
+  let body = "New posts from this subscription will show up here after the next refresh.";
+  if (state.query) {
+    title = "No matches";
+    body = `Nothing in ${listTitleText().toLowerCase() === "all articles" ? "your feed" : listTitleText()} mentions “${state.query}”.`;
+  } else if (state.filter === "unread") {
+    title = "All caught up";
+    body = "You've read everything. Go do the work.";
+  } else if (state.filter === "saved") {
+    title = "Nothing saved yet";
+    body = "Hit Save (or press s) on an article to keep it here.";
+  }
+  els.filteredEmptyTitle.textContent = title;
+  els.filteredEmptyBody.textContent = body;
 }
 
 function renderArticleList(articles, append) {
@@ -328,7 +478,8 @@ function renderArticleList(articles, append) {
     item.innerHTML = `
       <div class="article-source">
         ${a.is_read ? "" : '<span class="unread-dot"></span>'}
-        <span>${escapeHtml(a.feed_title)} · ${formatRelative(a.published_at)}</span>
+        <span>${escapeHtml(a.feed_title)} · ${formatRelative(a.published_at || a.sort_at)}</span>
+        ${a.is_saved ? '<span class="saved-mark" title="Saved">★</span>' : ""}
         ${scoreBadge}
       </div>
       <p class="article-title">${escapeHtml(a.title)}</p>
@@ -340,15 +491,80 @@ function renderArticleList(articles, append) {
   }
 }
 
+function setListItemRead(id, read) {
+  const article = state.articles.find((a) => a.id === id);
+  if (article) article.is_read = read ? 1 : 0;
+  const item = els.articleList.querySelector(`.article-item[data-id="${id}"]`);
+  if (!item) return;
+  item.classList.toggle("read", read);
+  const dot = item.querySelector(".unread-dot");
+  if (read) dot?.remove();
+  else if (!dot) item.querySelector(".article-source").insertAdjacentHTML("afterbegin", '<span class="unread-dot"></span>');
+}
+
 els.loadMoreBtn.addEventListener("click", () => loadArticles(false));
-els.refreshAllBtn.addEventListener("click", async () => {
-  els.refreshAllBtn.classList.add("active");
+
+// Infinite scroll: fetch the next page as the "Load more" button nears the viewport.
+new IntersectionObserver(
+  (entries) => {
+    if (entries.some((e) => e.isIntersecting) && !els.loadMoreBtn.hidden) loadArticles(false);
+  },
+  { root: els.articleListPane, rootMargin: "300px" },
+).observe(els.loadMoreBtn);
+
+async function refreshAll() {
+  if (els.refreshAllBtn.disabled) return;
+  els.refreshAllBtn.disabled = true;
+  els.refreshAllBtn.classList.add("spinning");
   try {
-    await api("/api/refresh", { method: "POST" });
-    await loadArticles(true);
+    const result = await api("/api/refresh", { method: "POST" });
+    const failed = result.details.filter((d) => d.error).length;
+    const summary = result.totalNew ? `${plural(result.totalNew, "new article")}` : "You're up to date";
+    toast(failed ? `${summary} · ${plural(failed, "feed")} failed to refresh` : summary);
+    await loadFeeds();
+    if (state.view !== "notebook") await loadArticles(true);
+  } catch (err) {
+    toast(err.message, "error");
   } finally {
-    els.refreshAllBtn.classList.remove("active");
+    els.refreshAllBtn.disabled = false;
+    els.refreshAllBtn.classList.remove("spinning");
   }
+}
+
+els.refreshAllBtn.addEventListener("click", refreshAll);
+
+async function markAllRead() {
+  if (els.markAllReadBtn.hidden || els.markAllReadBtn.disabled || state.maxId == null) return;
+  const maxId = state.maxId;
+  try {
+    const result = await api("/api/articles/mark-all-read", {
+      method: "POST",
+      body: JSON.stringify({ feedId: state.feedId, maxId }),
+    });
+    toast(result.marked ? `Marked ${plural(result.marked, "article")} as read` : "Nothing left to mark");
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  await loadFeeds();
+  if (state.filter === "unread") {
+    loadArticles(true);
+  } else {
+    for (const a of state.articles) if (a.id <= maxId) setListItemRead(a.id, true);
+  }
+}
+
+els.markAllReadBtn.addEventListener("click", markAllRead);
+
+let searchTimer = null;
+els.searchInput.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    const query = els.searchInput.value.trim();
+    if (query === state.query) return;
+    state.query = query;
+    loadArticles(true);
+  }, 250);
 });
 
 // --- Discover (topic-ranked "badass articles" across all subscriptions) ---
@@ -367,7 +583,7 @@ function renderTopicChips(topics) {
     chip.className = "topic-chip";
     chip.innerHTML = `
       <span>${escapeHtml(t.keyword)}</span>
-      <button class="chip-find" title="Find new Substacks for &quot;${escapeHtml(t.keyword)}&quot;">🔍</button>
+      <button class="chip-find" title="Find new Substacks for “${escapeHtml(t.keyword)}”">🔍</button>
       <button class="chip-remove" title="Stop tracking">✕</button>
     `;
     chip.querySelector(".chip-find").onclick = () => findSources(t.keyword);
@@ -421,7 +637,7 @@ function renderSourceSuggestions(topic, sources) {
       } catch (err) {
         btn.disabled = false;
         btn.textContent = "+ Subscribe";
-        alert(err.message);
+        toast(err.message, "error");
       }
     });
     list.appendChild(card);
@@ -439,7 +655,7 @@ els.topicAddForm.addEventListener("submit", async (e) => {
     await loadTopics();
     await loadArticles(true);
   } catch (err) {
-    alert(err.message);
+    toast(err.message, "error");
   }
 });
 
@@ -447,34 +663,37 @@ els.topicAddForm.addEventListener("submit", async (e) => {
 
 async function selectArticle(id) {
   flushProgress();
+  const token = ++selectRequestToken;
   state.selectedId = id;
   document.querySelectorAll(".article-item").forEach((el) => {
     el.classList.toggle("selected", Number(el.dataset.id) === id);
   });
+  els.articleList.querySelector(`.article-item[data-id="${id}"]`)?.scrollIntoView({ block: "nearest" });
 
-  const article = await api(`/api/articles/${id}`);
-  const listItem = document.querySelector(`.article-item[data-id="${id}"]`);
-  if (listItem) {
-    listItem.classList.add("read");
-    listItem.querySelector(".unread-dot")?.remove();
+  let article;
+  try {
+    article = await api(`/api/articles/${id}`);
+  } catch (err) {
+    if (token === selectRequestToken) toast(err.message, "error");
+    return;
   }
+  // The user already moved on to another article while this one was loading.
+  if (token !== selectRequestToken) return;
+
+  // Fetching the article marks it read server-side; is_read here is its state from before that.
+  if (!article.is_read) adjustUnread(article.feed_id, -1);
+  setListItemRead(id, true);
+  currentArticle = { ...article, is_read: 1 };
 
   els.readerEmpty.hidden = true;
   els.reader.hidden = false;
   els.readerTitle.textContent = article.title;
-  els.readerFeed.textContent = article.feed_title;
-  els.readerAuthor.textContent = article.author || "";
-  els.readerDate.textContent = formatDate(article.published_at);
+  renderReaderMeta(article);
   els.readerSourceLink.href = isSafeHttpUrl(article.url) ? article.url : "#";
   els.readerBody.innerHTML = article.content_html || `<p>${escapeHtml(article.summary || "No preview available.")}</p>`;
-  els.readerReadingTime.textContent = estimateReadingTime(article.content_html || article.summary);
   updateSaveBtn(!!article.is_saved);
-  els.saveBtn.onclick = async () => {
-    const res = await api(`/api/articles/${id}/save`, { method: "POST" });
-    updateSaveBtn(res.is_saved);
-  };
+  updateReadToggleBtn(true);
 
-  currentArticleContext = { id: article.id, title: article.title, url: article.url, feedTitle: article.feed_title };
   const shortTitle = article.title.length > 26 ? `${article.title.slice(0, 26)}…` : article.title;
   enterMobileScreen("reader", shortTitle);
 
@@ -496,16 +715,100 @@ async function selectArticle(id) {
   els.readerPane.addEventListener("scroll", readerScrollHandler);
 }
 
+function renderReaderMeta(article) {
+  els.readerMeta.innerHTML = "";
+  const parts = [
+    { text: article.feed_title, className: "reader-meta-feed" },
+    { text: article.author },
+    { text: formatDate(article.published_at) },
+    { text: estimateReadingTime(article.content_html || article.summary) },
+  ].filter((p) => p.text);
+  parts.forEach((part, i) => {
+    if (i > 0) {
+      const dot = document.createElement("span");
+      dot.className = "reader-meta-dot";
+      dot.textContent = "·";
+      els.readerMeta.append(dot);
+    }
+    const span = document.createElement("span");
+    if (part.className) span.className = part.className;
+    span.textContent = part.text;
+    els.readerMeta.append(span);
+  });
+}
+
 function updateSaveBtn(saved) {
   els.saveBtn.querySelector(".save-icon").textContent = saved ? "★" : "☆";
   els.saveBtn.lastChild.textContent = saved ? " Saved" : " Save";
   els.saveBtn.classList.toggle("active", saved);
 }
 
+function updateReadToggleBtn(read) {
+  els.readToggleBtn.textContent = read ? "Mark unread" : "Mark read";
+  els.readToggleBtn.title = `${read ? "Mark unread" : "Mark read"} (m)`;
+}
+
+async function toggleSave() {
+  if (!currentArticle) return;
+  const article = currentArticle;
+  try {
+    const res = await api(`/api/articles/${article.id}/save`, { method: "POST" });
+    article.is_saved = res.is_saved ? 1 : 0;
+    if (currentArticle === article) updateSaveBtn(res.is_saved);
+    const listed = state.articles.find((a) => a.id === article.id);
+    if (listed) listed.is_saved = article.is_saved;
+    const source = els.articleList.querySelector(`.article-item[data-id="${article.id}"] .article-source`);
+    source?.querySelector(".saved-mark")?.remove();
+    if (source && res.is_saved) {
+      source.querySelector("span:not(.unread-dot)").insertAdjacentHTML("afterend", '<span class="saved-mark" title="Saved">★</span>');
+    }
+    toast(res.is_saved ? "Saved" : "Removed from Saved");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function toggleRead() {
+  if (!currentArticle) return;
+  const article = currentArticle;
+  const nextRead = !article.is_read;
+  try {
+    await api(`/api/articles/${article.id}/read`, { method: "POST", body: JSON.stringify({ read: nextRead }) });
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  article.is_read = nextRead ? 1 : 0;
+  if (currentArticle === article) updateReadToggleBtn(nextRead);
+  setListItemRead(article.id, nextRead);
+  adjustUnread(article.feed_id, nextRead ? -1 : 1);
+}
+
+els.saveBtn.addEventListener("click", toggleSave);
+els.readToggleBtn.addEventListener("click", toggleRead);
+
+function openOriginal() {
+  if (currentArticle && isSafeHttpUrl(currentArticle.url)) {
+    window.open(currentArticle.url, "_blank", "noopener,noreferrer");
+  }
+}
+
+async function moveSelection(delta) {
+  if (state.view === "notebook" || state.articles.length === 0) return;
+  let index = state.articles.findIndex((a) => a.id === state.selectedId);
+  let next = index === -1 ? 0 : index + delta;
+  if (next >= state.articles.length && state.cursor) {
+    await loadArticles(false);
+    index = state.articles.findIndex((a) => a.id === state.selectedId);
+    next = index + delta;
+  }
+  next = Math.max(0, Math.min(state.articles.length - 1, next));
+  if (next !== index) selectArticle(state.articles[next].id);
+}
+
 function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str ?? "";
-  return div.innerHTML;
+  const replacements = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return String(str ?? "").replace(/[&<>"']/g, (ch) => replacements[ch]);
 }
 
 function isSafeHttpUrl(url) {
@@ -527,6 +830,7 @@ async function loadHighlights() {
   const highlights = await api("/api/highlights");
   els.notebookList.innerHTML = "";
   els.notebookEmpty.hidden = highlights.length > 0;
+  els.copyAllBtn.disabled = highlights.length === 0;
   for (const h of highlights) renderHighlightItem(h);
 }
 
@@ -542,16 +846,37 @@ function renderHighlightItem(h) {
 
   const meta = document.createElement("div");
   meta.className = "highlight-meta";
-  const source = document.createElement("span");
-  source.textContent = h.article_title ? `${h.feed_title ? `${h.feed_title} — ` : ""}${h.article_title}` : "Note";
-  source.title = source.textContent;
+  const sourceText = h.article_title ? `${h.feed_title ? `${h.feed_title} — ` : ""}${h.article_title}` : "Note";
+  let source;
+  if (h.article_id) {
+    source = document.createElement("button");
+    source.className = "highlight-source";
+    source.title = `Open “${h.article_title}” in the reader`;
+    source.addEventListener("click", () => openArticleOutsideList(h.article_id));
+  } else {
+    source = document.createElement("span");
+    source.title = sourceText;
+  }
+  source.textContent = sourceText;
+  meta.append(source);
+  if (h.article_url && isSafeHttpUrl(h.article_url)) {
+    const link = document.createElement("a");
+    link.className = "highlight-original";
+    link.href = h.article_url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.title = "Open original";
+    link.textContent = "↗";
+    meta.append(link);
+  }
   const removeBtn = document.createElement("button");
   removeBtn.className = "remove-highlight";
   removeBtn.title = "Remove";
   removeBtn.textContent = "✕";
-  meta.append(source, removeBtn);
+  meta.append(removeBtn);
 
   item.append(textarea, meta);
+  item.highlight = h;
   els.notebookList.appendChild(item);
   requestAnimationFrame(() => autoGrow(textarea));
 
@@ -562,14 +887,25 @@ function renderHighlightItem(h) {
     saveTimer = setTimeout(async () => {
       const text = textarea.value.trim();
       if (!text) return;
-      await api(`/api/highlights/${h.id}`, { method: "PATCH", body: JSON.stringify({ text }) });
+      try {
+        await api(`/api/highlights/${h.id}`, { method: "PATCH", body: JSON.stringify({ text }) });
+      } catch (err) {
+        toast(`Couldn't save your edit: ${err.message}`, "error");
+      }
     }, 600);
   });
 
   removeBtn.addEventListener("click", async () => {
-    await api(`/api/highlights/${h.id}`, { method: "DELETE" });
+    try {
+      await api(`/api/highlights/${h.id}`, { method: "DELETE" });
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
     item.remove();
-    els.notebookEmpty.hidden = els.notebookList.children.length > 0;
+    const remaining = els.notebookList.children.length;
+    els.notebookEmpty.hidden = remaining > 0;
+    els.copyAllBtn.disabled = remaining === 0;
   });
 }
 
@@ -577,10 +913,60 @@ els.notebookAddForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = els.notebookAddInput.value.trim();
   if (!text) return;
-  const created = await api("/api/highlights", { method: "POST", body: JSON.stringify({ text }) });
-  els.notebookAddInput.value = "";
-  els.notebookEmpty.hidden = true;
-  renderHighlightItem(created);
+  try {
+    const created = await api("/api/highlights", { method: "POST", body: JSON.stringify({ text }) });
+    els.notebookAddInput.value = "";
+    els.notebookEmpty.hidden = true;
+    els.copyAllBtn.disabled = false;
+    renderHighlightItem(created);
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
+// Builds a script draft from My List: every snippet as currently edited, then the articles they came from.
+function notebookAsText() {
+  const items = [...els.notebookList.querySelectorAll(".highlight-item")];
+  const snippets = items.map((item) => item.querySelector(".highlight-text").value.trim()).filter(Boolean);
+  const sources = new Map();
+  for (const item of items) {
+    const h = item.highlight;
+    if (h?.article_title && !sources.has(h.article_url || h.article_title)) {
+      const from = h.feed_title ? ` — ${h.feed_title}` : "";
+      sources.set(h.article_url || h.article_title, `- ${h.article_title}${from}${h.article_url ? ` (${h.article_url})` : ""}`);
+    }
+  }
+  let text = snippets.join("\n\n");
+  if (sources.size) text += `\n\n---\nSources:\n${[...sources.values()].join("\n")}`;
+  return { text, count: snippets.length };
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Clipboard API is unavailable on insecure origins and some embedded browsers.
+    const scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.style.position = "fixed";
+    scratch.style.opacity = "0";
+    document.body.appendChild(scratch);
+    scratch.select();
+    const ok = document.execCommand("copy");
+    scratch.remove();
+    if (!ok) throw new Error("Copy failed — your browser blocked clipboard access");
+  }
+}
+
+els.copyAllBtn.addEventListener("click", async () => {
+  const { text, count } = notebookAsText();
+  if (!count) return;
+  try {
+    await copyToClipboard(text);
+    toast(`Copied ${plural(count, "snippet")} to the clipboard`);
+  } catch (err) {
+    toast(err.message, "error");
+  }
 });
 
 // --- Text selection → "Add to my list" ---
@@ -592,54 +978,194 @@ function initSelectionCapture() {
   btn.hidden = true;
   document.body.appendChild(btn);
 
-  document.addEventListener("mouseup", (e) => {
-    if (e.target === btn) return;
+  const coarsePointer = window.matchMedia("(pointer: coarse)");
+  let mouseSelecting = false;
+
+  function readerSelection() {
     const sel = window.getSelection();
-    const text = sel && sel.toString().trim();
-    if (!text || !sel.rangeCount || !els.readerBody.contains(sel.anchorNode)) {
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const text = sel.toString().trim();
+    if (!text || !els.readerBody.contains(sel.anchorNode)) return null;
+    return { text, rect: sel.getRangeAt(0).getBoundingClientRect() };
+  }
+
+  function update() {
+    const found = readerSelection();
+    if (!found) {
       btn.hidden = true;
       return;
     }
-    const rect = sel.getRangeAt(0).getBoundingClientRect();
-    const left = Math.min(Math.max(8, rect.left + rect.width / 2 - 75), window.innerWidth - 158);
-    btn.style.left = `${left}px`;
-    btn.style.top = `${Math.max(8, rect.top - 40)}px`;
+    btn.dataset.text = found.text;
     btn.hidden = false;
-    btn.dataset.text = text;
+    const { rect } = found;
+    const width = btn.offsetWidth;
+    const left = Math.min(Math.max(8, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 8);
+    // Touch browsers put their own copy/share menu above the selection, so sit below it there.
+    const top = coarsePointer.matches
+      ? Math.min(rect.bottom + 14, window.innerHeight - btn.offsetHeight - 12)
+      : Math.max(8, rect.top - btn.offsetHeight - 8);
+    btn.style.left = `${left}px`;
+    btn.style.top = `${top}px`;
+  }
+
+  // selectionchange is the only signal touch selection (long-press + drag handles) gives us;
+  // with a mouse, wait for the drag to finish so the button doesn't chase the cursor.
+  let selectionTimer;
+  document.addEventListener("selectionchange", () => {
+    if (mouseSelecting) return;
+    clearTimeout(selectionTimer);
+    selectionTimer = setTimeout(update, 150);
+  });
+  document.addEventListener("mousedown", (e) => {
+    if (e.target === btn) return;
+    mouseSelecting = true;
+    btn.hidden = true;
+  });
+  document.addEventListener("mouseup", () => {
+    if (!mouseSelecting) return;
+    mouseSelecting = false;
+    setTimeout(update, 0);
+  });
+  els.readerPane.addEventListener("scroll", () => {
+    if (!btn.hidden) requestAnimationFrame(update);
   });
 
-  document.addEventListener("mousedown", (e) => {
-    if (e.target !== btn) btn.hidden = true;
-  });
+  // Keep the selection alive while pressing the button.
+  btn.addEventListener("mousedown", (e) => e.preventDefault());
 
   btn.addEventListener("click", async () => {
     const text = btn.dataset.text;
     if (!text) return;
     btn.hidden = true;
+    window.getSelection()?.removeAllRanges();
     try {
       await api("/api/highlights", {
         method: "POST",
         body: JSON.stringify({
           text,
-          articleId: currentArticleContext?.id ?? null,
-          articleTitle: currentArticleContext?.title ?? null,
-          articleUrl: currentArticleContext?.url ?? null,
-          feedTitle: currentArticleContext?.feedTitle ?? null,
+          articleId: currentArticle?.id ?? null,
+          articleTitle: currentArticle?.title ?? null,
+          articleUrl: currentArticle?.url ?? null,
+          feedTitle: currentArticle?.feed_title ?? null,
         }),
       });
+      toast("Added to My List");
     } catch (err) {
-      alert(err.message);
+      toast(err.message, "error");
     }
   });
 }
+
+// --- Keyboard shortcuts ---
+
+function openShortcuts() {
+  els.shortcutsDialog.hidden = false;
+  els.shortcutsCloseBtn.focus();
+}
+
+function closeShortcuts() {
+  els.shortcutsDialog.hidden = true;
+}
+
+els.shortcutsHintBtn.addEventListener("click", openShortcuts);
+els.shortcutsCloseBtn.addEventListener("click", closeShortcuts);
+els.shortcutsDialog.addEventListener("click", (e) => {
+  if (e.target === els.shortcutsDialog) closeShortcuts();
+});
+
+const GO_TO = {
+  a: () => setFilter(null, null),
+  u: () => setFilter(null, "unread"),
+  s: () => setFilter(null, "saved"),
+  l: openNotebook,
+  d: openDiscover,
+};
+
+let awaitingGoTo = false;
+let goToTimer = null;
+
+document.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+
+  if (!els.shortcutsDialog.hidden) {
+    if (e.key === "Escape" || e.key === "?") {
+      e.preventDefault();
+      closeShortcuts();
+    }
+    return;
+  }
+
+  const target = e.target;
+  const typing =
+    target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+  if (typing) {
+    if (e.key === "Escape" && target === els.searchInput) {
+      if (els.searchInput.value) {
+        els.searchInput.value = "";
+        els.searchInput.dispatchEvent(new Event("input"));
+      }
+      els.searchInput.blur();
+    }
+    return;
+  }
+
+  if (awaitingGoTo) {
+    awaitingGoTo = false;
+    clearTimeout(goToTimer);
+    const go = GO_TO[e.key];
+    if (go) {
+      e.preventDefault();
+      go();
+    }
+    return;
+  }
+
+  // The reader keeps its last article while My List is open; don't act on it from there.
+  const inReader = (fn) => () => {
+    if (state.view !== "notebook") fn();
+  };
+  const actions = {
+    j: () => moveSelection(1),
+    k: () => moveSelection(-1),
+    o: inReader(openOriginal),
+    s: inReader(toggleSave),
+    m: inReader(toggleRead),
+    r: refreshAll,
+    A: markAllRead,
+    "?": openShortcuts,
+    "/": () => {
+      if (state.view !== "feed") setFilter(state.feedId, state.filter);
+      els.searchInput.focus();
+    },
+    g: () => {
+      awaitingGoTo = true;
+      clearTimeout(goToTimer);
+      goToTimer = setTimeout(() => {
+        awaitingGoTo = false;
+      }, 1200);
+    },
+  };
+  const action = actions[e.key];
+  if (!action) return;
+  e.preventDefault();
+  action();
+});
 
 window.addEventListener("beforeunload", flushProgress);
 
 // --- Init ---
 
-renderStaticFilters();
-initSelectionCapture();
-enterMobileScreen("list", "DisciplineFeed");
-loadFeeds();
-loadArticles(true);
-loadContinueReading();
+async function init() {
+  renderStaticFilters();
+  initSelectionCapture();
+  enterMobileScreen("list", "DisciplineFeed");
+  try {
+    await loadFeeds();
+    await loadArticles(true);
+    await loadContinueReading();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+init();

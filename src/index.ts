@@ -190,10 +190,35 @@ app.post("/api/articles/mark-all-read", async (c) => {
     conditions.push("feed_id = ?");
     params.push(body.feedId);
   }
-  const result = await c.env.DB.prepare(`UPDATE articles SET is_read = 1 WHERE ${conditions.join(" AND ")}`)
+  const { results } = await c.env.DB.prepare(
+    `UPDATE articles SET is_read = 1 WHERE ${conditions.join(" AND ")} RETURNING id`,
+  )
     .bind(...params)
-    .run();
-  return c.json({ marked: result.meta.changes });
+    .all<{ id: number }>();
+  // The ids let the client offer "Undo".
+  return c.json({ marked: results.length, ids: results.map((r) => r.id) });
+});
+
+// D1 caps bound parameters per statement at 100, so large id lists go out as several statements.
+const MAX_IDS_PER_STATEMENT = 90;
+const MAX_IDS_PER_REQUEST = 10000;
+
+app.post("/api/articles/mark-unread", async (c) => {
+  const body = await c.req.json<{ ids?: unknown }>().catch(() => ({}) as { ids?: unknown });
+  const ids = body.ids;
+  if (!Array.isArray(ids) || !ids.every((id) => Number.isInteger(id) && id > 0)) {
+    return c.json({ error: "ids must be a list of article ids" }, 400);
+  }
+  if (ids.length > MAX_IDS_PER_REQUEST) return c.json({ error: "Too many articles at once" }, 400);
+  const statements = [];
+  for (let i = 0; i < ids.length; i += MAX_IDS_PER_STATEMENT) {
+    const chunk = ids.slice(i, i + MAX_IDS_PER_STATEMENT);
+    statements.push(
+      c.env.DB.prepare(`UPDATE articles SET is_read = 0 WHERE id IN (${chunk.map(() => "?").join(", ")})`).bind(...chunk),
+    );
+  }
+  if (statements.length) await c.env.DB.batch(statements);
+  return c.json({ ok: true });
 });
 
 app.get("/api/articles/:id", async (c) => {

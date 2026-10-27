@@ -157,9 +157,21 @@ function plural(n, word) {
 let toastTimer = null;
 
 // durationMs of 0 keeps the toast up until the next one replaces it (for progress messages).
-function toast(message, kind = "info", durationMs = kind === "error" ? 5000 : 2600) {
+// action: optional { label, run } rendered as a button, e.g. Undo.
+function toast(message, kind = "info", durationMs = kind === "error" ? 5000 : 2600, action = null) {
   els.toast.textContent = message;
   els.toast.classList.toggle("error", kind === "error");
+  if (action) {
+    const btn = document.createElement("button");
+    btn.className = "toast-action";
+    btn.textContent = action.label;
+    btn.addEventListener("click", () => {
+      clearTimeout(toastTimer);
+      els.toast.hidden = true;
+      action.run();
+    });
+    els.toast.append(btn);
+  }
   els.toast.hidden = false;
   clearTimeout(toastTimer);
   if (durationMs > 0) {
@@ -168,6 +180,8 @@ function toast(message, kind = "info", durationMs = kind === "error" ? 5000 : 26
     }, durationMs);
   }
 }
+
+const UNDO_TOAST_MS = 7000;
 
 // --- Sidebar (built-in filters + feeds) ---
 
@@ -654,23 +668,47 @@ els.refreshAllBtn.addEventListener("click", refreshAll);
 
 async function markAllRead() {
   if (els.markAllReadBtn.hidden || els.markAllReadBtn.disabled || state.maxId == null) return;
-  const maxId = state.maxId;
+  let result;
   try {
-    const result = await api("/api/articles/mark-all-read", {
+    result = await api("/api/articles/mark-all-read", {
       method: "POST",
-      body: JSON.stringify({ feedId: state.feedId, maxId }),
+      body: JSON.stringify({ feedId: state.feedId, maxId: state.maxId }),
     });
-    toast(result.marked ? `Marked ${plural(result.marked, "article")} as read` : "Nothing left to mark");
   } catch (err) {
     toast(err.message, "error");
     return;
   }
-  await loadFeeds();
-  if (state.filter === "unread") {
-    loadArticles(true);
+  if (result.marked) {
+    toast(`Marked ${plural(result.marked, "article")} as read`, "info", UNDO_TOAST_MS, {
+      label: "Undo",
+      run: () => restoreUnread(result.ids),
+    });
   } else {
-    for (const a of state.articles) if (a.id <= maxId) setListItemRead(a.id, true);
+    toast("Nothing left to mark");
   }
+  await reflectReadState(result.ids, true);
+}
+
+async function restoreUnread(ids) {
+  try {
+    await api("/api/articles/mark-unread", { method: "POST", body: JSON.stringify({ ids }) });
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  toast(`Restored ${plural(ids.length, "unread article")}`);
+  await reflectReadState(ids, false);
+}
+
+// Brings counts and the visible list in line after a bulk read/unread change.
+async function reflectReadState(ids, read) {
+  await loadFeeds();
+  if (state.view === "feed" && state.filter === "unread") {
+    loadArticles(true);
+    return;
+  }
+  const changed = new Set(ids);
+  for (const a of state.articles) if (changed.has(a.id)) setListItemRead(a.id, read);
 }
 
 els.markAllReadBtn.addEventListener("click", markAllRead);
@@ -1127,6 +1165,8 @@ function renderHighlightItem(h) {
   });
 
   removeBtn.addEventListener("click", async () => {
+    const position = [...els.notebookList.children].indexOf(item);
+    const text = textarea.value.trim() || h.text;
     try {
       await api(`/api/highlights/${h.id}`, { method: "DELETE" });
     } catch (err) {
@@ -1135,7 +1175,35 @@ function renderHighlightItem(h) {
     }
     item.remove();
     updateNotebookChrome();
+    toast("Snippet removed", "info", UNDO_TOAST_MS, { label: "Undo", run: () => restoreHighlight({ ...h, text }, position) });
   });
+
+  return item;
+}
+
+// Re-creates a deleted snippet and puts it back where it was.
+async function restoreHighlight(h, position) {
+  let created;
+  try {
+    created = await api("/api/highlights", {
+      method: "POST",
+      body: JSON.stringify({
+        text: h.text,
+        articleId: h.article_id,
+        articleTitle: h.article_title,
+        articleUrl: h.article_url,
+        feedTitle: h.feed_title,
+      }),
+    });
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  if (state.view !== "notebook") return;
+  const item = renderHighlightItem(created);
+  els.notebookList.insertBefore(item, els.notebookList.children[position] ?? null);
+  updateNotebookChrome();
+  saveNotebookOrder();
 }
 
 els.notebookAddForm.addEventListener("submit", async (e) => {

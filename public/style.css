@@ -1008,6 +1008,7 @@ kbd {
   justify-content: space-between;
   gap: 16px;
 }
+.notebook-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 
 .notebook-header h2 {
   font-family: var(--font-read);
@@ -1172,6 +1173,108 @@ body.reordering, body.reordering * { cursor: grabbing !important; user-select: n
   padding: 2px 4px;
 }
 .remove-highlight:hover { color: #c0392b; }
+
+/* ---------- Teleprompter ---------- */
+
+body.prompter-open { overflow: hidden; }
+
+.prompter {
+  --prompter-size: 44px;
+  /* vh, not %: percentage padding resolves against width, which would misalign text and guide. */
+  --guide-top: 32vh;
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  background: #0d0c0a;
+  color: #f4efe6;
+}
+.prompter-scroll {
+  height: 100%;
+  overflow-y: auto;
+  cursor: pointer;
+  scrollbar-width: none;
+}
+.prompter-scroll::-webkit-scrollbar { display: none; }
+/* Padding lets the first line start on the guide and the last line scroll up to it. */
+.prompter-text {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: var(--guide-top) 6vw 75vh;
+  font-family: var(--font-ui);
+  font-size: var(--prompter-size);
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: 0.005em;
+}
+.prompter-text p { margin: 0 0 1.1em; }
+.prompter-text.mirrored { transform: scaleX(-1); }
+.prompter-guide {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--guide-top);
+  height: calc(var(--prompter-size) * 1.45);
+  border-top: 2px solid rgba(220, 146, 101, 0.55);
+  border-bottom: 2px solid rgba(220, 146, 101, 0.25);
+  background: rgba(220, 146, 101, 0.07);
+  pointer-events: none;
+}
+.prompter-countdown {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-read);
+  font-size: min(40vw, 260px);
+  font-weight: 700;
+  color: #dc9265;
+  background: rgba(13, 12, 10, 0.6);
+  pointer-events: none;
+}
+.prompter-controls {
+  position: absolute;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 8px;
+  border-radius: 16px;
+  background: rgba(36, 33, 25, 0.92);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+}
+.prompter-controls button {
+  min-width: 40px;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #3a352a;
+  border-radius: 10px;
+  background: #1d1b16;
+  color: #ece6d9;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.prompter-controls button:hover:not(:disabled) { border-color: #dc9265; }
+.prompter-controls button:disabled { opacity: 0.4; cursor: default; }
+.prompter-controls button[aria-pressed="true"] { background: #dc9265; border-color: #dc9265; color: #16140f; }
+.prompter-controls .prompter-play { min-width: 112px; background: #dc9265; border-color: #dc9265; color: #16140f; }
+.prompter-group { display: flex; align-items: center; gap: 4px; }
+.prompter-value {
+  min-width: 72px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #a49b8a;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ---------- Toast + dialog ---------- */
 

@@ -188,7 +188,10 @@
           <p class="notebook-subtitle">Snippets you've selected while reading, plus anything you jot down yourself — edit freely and drag to shape your script.</p>
           <p id="notebookStats" class="notebook-stats"></p>
         </div>
-        <button id="copyAllBtn" class="toolbar-btn" title="Copy every snippet, plus a sources list, to the clipboard">⧉ Copy all</button>
+        <div class="notebook-actions">
+          <button id="prompterOpenBtn" class="toolbar-btn" title="Read your script on camera, auto-scrolling">▶ Teleprompter</button>
+          <button id="copyAllBtn" class="toolbar-btn" title="Copy every snippet, plus a sources list, to the clipboard">⧉ Copy all</button>
+        </div>
       </div>
       <form id="notebookAddForm" class="notebook-add-form">
         <textarea id="notebookAddInput" placeholder="Write something…" rows="2"></textarea>
@@ -200,6 +203,29 @@
         <p class="empty-state-body">Select text while reading an article and tap "Add to my list", or jot a note above.</p>
       </div>
     </section>
+  </div>
+
+  <div id="prompter" class="prompter" role="dialog" aria-modal="true" aria-label="Teleprompter" hidden>
+    <div id="prompterScroll" class="prompter-scroll">
+      <div id="prompterText" class="prompter-text"></div>
+    </div>
+    <div class="prompter-guide" aria-hidden="true"></div>
+    <div id="prompterCountdown" class="prompter-countdown" aria-live="assertive" hidden></div>
+    <div class="prompter-controls">
+      <button id="prompterPlayBtn" class="prompter-play">▶ Start</button>
+      <div class="prompter-group">
+        <button id="prompterSlowerBtn" aria-label="Slower (↓)">−</button>
+        <span id="prompterSpeed" class="prompter-value"></span>
+        <button id="prompterFasterBtn" aria-label="Faster (↑)">+</button>
+      </div>
+      <div class="prompter-group">
+        <button id="prompterSmallerBtn" aria-label="Smaller text">A−</button>
+        <button id="prompterLargerBtn" aria-label="Larger text">A+</button>
+      </div>
+      <button id="prompterMirrorBtn" aria-pressed="false" title="Flip horizontally, for teleprompter glass (m)">Mirror</button>
+      <button id="prompterRestartBtn" title="Back to the top (r)">↺</button>
+      <button id="prompterCloseBtn" aria-label="Close teleprompter (Esc)">✕</button>
+    </div>
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

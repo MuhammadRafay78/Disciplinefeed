@@ -9,6 +9,7 @@ A personal RSS reader for discipline, focus and self-improvement writing, plus a
 - Reader with reading progress, a **Continue Reading** list, saved articles, unread counts, search and mark-all-read.
 - **Discover**: track topic keywords to surface the best-matching articles across your subscriptions, and find new Substacks for a topic.
 - **My List**: select text while reading and tap **+ Add to my list**, or jot your own notes. Drag snippets into order, check the word count and estimated speaking time, then **Copy all** to get a script draft with a sources list.
+- **Teleprompter**: read your My List script on camera. It scrolls at a words-per-minute pace you set, with a 3-2-1 countdown, tap or Space to pause, mirror mode for teleprompter glass, and keeps the phone screen awake while running.
 
 ### Keyboard shortcuts
 
@@ -25,6 +26,8 @@ A personal RSS reader for discipline, focus and self-improvement writing, plus a
 | `?` | Show shortcuts |
 
 In My List, focus a snippet's grip handle and press `↑` / `↓` to move it.
+
+In the teleprompter: `Space` start/pause, `↑` / `↓` speed, `m` mirror, `r` back to the top, `Esc` close.
 
 ## Development
 

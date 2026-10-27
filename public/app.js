@@ -80,6 +80,20 @@ const els = {
   notebookList: document.getElementById("notebookList"),
   notebookEmpty: document.getElementById("notebookEmpty"),
   copyAllBtn: document.getElementById("copyAllBtn"),
+  prompterOpenBtn: document.getElementById("prompterOpenBtn"),
+  prompter: document.getElementById("prompter"),
+  prompterScroll: document.getElementById("prompterScroll"),
+  prompterText: document.getElementById("prompterText"),
+  prompterCountdown: document.getElementById("prompterCountdown"),
+  prompterPlayBtn: document.getElementById("prompterPlayBtn"),
+  prompterSlowerBtn: document.getElementById("prompterSlowerBtn"),
+  prompterFasterBtn: document.getElementById("prompterFasterBtn"),
+  prompterSpeed: document.getElementById("prompterSpeed"),
+  prompterSmallerBtn: document.getElementById("prompterSmallerBtn"),
+  prompterLargerBtn: document.getElementById("prompterLargerBtn"),
+  prompterMirrorBtn: document.getElementById("prompterMirrorBtn"),
+  prompterRestartBtn: document.getElementById("prompterRestartBtn"),
+  prompterCloseBtn: document.getElementById("prompterCloseBtn"),
   notebookStats: document.getElementById("notebookStats"),
   mobileMenuBtn: document.getElementById("mobileMenuBtn"),
   mobileBackBtn: document.getElementById("mobileBackBtn"),
@@ -1095,6 +1109,7 @@ function updateNotebookChrome() {
   const texts = [...els.notebookList.querySelectorAll(".highlight-text")];
   els.notebookEmpty.hidden = texts.length > 0;
   els.copyAllBtn.disabled = texts.length === 0;
+  els.prompterOpenBtn.disabled = texts.length === 0;
   if (texts.length === 0) {
     els.notebookStats.textContent = "";
     return;
@@ -1497,7 +1512,14 @@ function initSelectionCapture() {
 
 const PREFS_KEY = "df:prefs";
 const TEXT_SIZES = [15, 17, 19, 21, 23, 26];
-const DEFAULT_PREFS = { theme: "auto", font: "serif", textSize: 19 };
+const DEFAULT_PREFS = {
+  theme: "auto",
+  font: "serif",
+  textSize: 19,
+  prompterWpm: SPEAKING_WORDS_PER_MINUTE,
+  prompterSize: window.innerWidth < 600 ? 34 : 44,
+  prompterMirror: false,
+};
 
 function readPrefs() {
   try {
@@ -1566,6 +1588,197 @@ function initReaderPrefs() {
   });
 }
 
+// --- Teleprompter: read the My List script on camera ---
+
+const PROMPTER_WPM_RANGE = { min: 80, max: 260, step: 10 };
+const PROMPTER_SIZES = [28, 34, 40, 44, 52, 60, 72];
+const PROMPTER_COUNTDOWN_FROM = 3;
+
+const prompter = { playing: false, raf: 0, lastTs: 0, carry: 0, words: 1, wakeLock: null, countdownToken: 0 };
+
+function applyPrompterPrefs() {
+  const prefs = readPrefs();
+  els.prompter.style.setProperty("--prompter-size", `${prefs.prompterSize}px`);
+  els.prompterSpeed.textContent = `${prefs.prompterWpm} wpm`;
+  els.prompterText.classList.toggle("mirrored", prefs.prompterMirror);
+  els.prompterMirrorBtn.setAttribute("aria-pressed", String(prefs.prompterMirror));
+  els.prompterSlowerBtn.disabled = prefs.prompterWpm <= PROMPTER_WPM_RANGE.min;
+  els.prompterFasterBtn.disabled = prefs.prompterWpm >= PROMPTER_WPM_RANGE.max;
+  els.prompterSmallerBtn.disabled = prefs.prompterSize <= PROMPTER_SIZES[0];
+  els.prompterLargerBtn.disabled = prefs.prompterSize >= PROMPTER_SIZES[PROMPTER_SIZES.length - 1];
+}
+
+function changePrompterPref(change) {
+  updatePrefs(change);
+  applyPrompterPrefs();
+}
+
+function stepPrompterSpeed(direction) {
+  const { min, max, step } = PROMPTER_WPM_RANGE;
+  changePrompterPref({ prompterWpm: Math.min(max, Math.max(min, readPrefs().prompterWpm + direction * step)) });
+}
+
+function stepPrompterSize(direction) {
+  const current = readPrefs().prompterSize;
+  const next =
+    direction > 0 ? PROMPTER_SIZES.find((s) => s > current) : [...PROMPTER_SIZES].reverse().find((s) => s < current);
+  if (next) changePrompterPref({ prompterSize: next });
+}
+
+function openPrompter() {
+  const snippets = [...els.notebookList.querySelectorAll(".highlight-text")].map((t) => t.value.trim()).filter(Boolean);
+  if (snippets.length === 0) return;
+  els.prompterText.innerHTML = "";
+  for (const snippet of snippets) {
+    const p = document.createElement("p");
+    p.textContent = snippet;
+    els.prompterText.append(p);
+  }
+  prompter.words = snippets.join(" ").match(/\S+/g)?.length ?? 1;
+  applyPrompterPrefs();
+  els.prompter.hidden = false;
+  document.body.classList.add("prompter-open");
+  els.prompterScroll.scrollTop = 0;
+  setPrompterButton("start");
+  els.prompterPlayBtn.focus();
+}
+
+function closePrompter() {
+  pausePrompter();
+  els.prompter.hidden = true;
+  document.body.classList.remove("prompter-open");
+  els.prompterOpenBtn.focus();
+}
+
+function setPrompterButton(mode) {
+  els.prompterPlayBtn.textContent = { start: "▶ Start", pause: "❚❚ Pause", resume: "▶ Resume", again: "↺ Again" }[mode];
+}
+
+function prompterAtEnd() {
+  const el = els.prompterScroll;
+  return el.scrollTop >= el.scrollHeight - el.clientHeight - 1;
+}
+
+// Scroll speed comes from words per minute: the text block's height covers all the script's words.
+function prompterPixelsPerSecond() {
+  return (els.prompterText.offsetHeight / prompter.words) * (readPrefs().prompterWpm / 60);
+}
+
+function prompterTick(ts) {
+  if (!prompter.playing) return;
+  const dt = prompter.lastTs ? Math.min(0.1, (ts - prompter.lastTs) / 1000) : 0;
+  prompter.lastTs = ts;
+  // Accumulate sub-pixel movement; scrollTop may round fractional writes away.
+  prompter.carry += prompterPixelsPerSecond() * dt;
+  const whole = Math.floor(prompter.carry);
+  if (whole > 0) {
+    els.prompterScroll.scrollTop += whole;
+    prompter.carry -= whole;
+  }
+  if (prompterAtEnd()) {
+    pausePrompter();
+    setPrompterButton("again");
+    return;
+  }
+  prompter.raf = requestAnimationFrame(prompterTick);
+}
+
+async function runCountdown() {
+  const token = ++prompter.countdownToken;
+  els.prompterCountdown.hidden = false;
+  for (let n = PROMPTER_COUNTDOWN_FROM; n > 0; n--) {
+    els.prompterCountdown.textContent = n;
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    if (token !== prompter.countdownToken) return false;
+  }
+  els.prompterCountdown.hidden = true;
+  return true;
+}
+
+function cancelCountdown() {
+  prompter.countdownToken++;
+  els.prompterCountdown.hidden = true;
+}
+
+async function playPrompter() {
+  if (prompter.playing) return;
+  const fromTop = prompterAtEnd() || els.prompterScroll.scrollTop === 0;
+  if (prompterAtEnd()) els.prompterScroll.scrollTop = 0;
+  setPrompterButton("pause");
+  if (fromTop && !(await runCountdown())) return;
+  prompter.playing = true;
+  prompter.lastTs = 0;
+  prompter.carry = 0;
+  prompter.raf = requestAnimationFrame(prompterTick);
+  // Keep a phone's screen from dimming mid-take; unsupported or refused is fine.
+  try {
+    prompter.wakeLock = await navigator.wakeLock?.request("screen");
+  } catch {
+    prompter.wakeLock = null;
+  }
+}
+
+function pausePrompter() {
+  const wasActive = prompter.playing || !els.prompterCountdown.hidden;
+  cancelCountdown();
+  prompter.playing = false;
+  cancelAnimationFrame(prompter.raf);
+  prompter.wakeLock?.release().catch(() => {});
+  prompter.wakeLock = null;
+  if (wasActive) setPrompterButton("resume");
+}
+
+function togglePrompter() {
+  if (prompter.playing || !els.prompterCountdown.hidden) pausePrompter();
+  else playPrompter();
+}
+
+function restartPrompter() {
+  pausePrompter();
+  els.prompterScroll.scrollTop = 0;
+  setPrompterButton("start");
+}
+
+function handlePrompterKey(e) {
+  const onButton = e.target instanceof HTMLButtonElement;
+  const actions = {
+    " ": () => !onButton && togglePrompter(),
+    Escape: closePrompter,
+    ArrowUp: () => stepPrompterSpeed(1),
+    ArrowDown: () => stepPrompterSpeed(-1),
+    m: () => changePrompterPref({ prompterMirror: !readPrefs().prompterMirror }),
+    r: restartPrompter,
+  };
+  const action = actions[e.key];
+  if (!action || (e.key === " " && onButton)) return;
+  e.preventDefault();
+  action();
+}
+
+function initPrompter() {
+  els.prompterOpenBtn.addEventListener("click", openPrompter);
+  els.prompterCloseBtn.addEventListener("click", closePrompter);
+  els.prompterPlayBtn.addEventListener("click", togglePrompter);
+  els.prompterRestartBtn.addEventListener("click", restartPrompter);
+  els.prompterSlowerBtn.addEventListener("click", () => stepPrompterSpeed(-1));
+  els.prompterFasterBtn.addEventListener("click", () => stepPrompterSpeed(1));
+  els.prompterSmallerBtn.addEventListener("click", () => stepPrompterSize(-1));
+  els.prompterLargerBtn.addEventListener("click", () => stepPrompterSize(1));
+  els.prompterMirrorBtn.addEventListener("click", () => changePrompterPref({ prompterMirror: !readPrefs().prompterMirror }));
+  // Tapping the script itself pauses/resumes: the natural gesture on a phone propped up to record.
+  els.prompterScroll.addEventListener("click", togglePrompter);
+  // The OS drops a wake lock when the page is hidden; take it again on return if still playing.
+  document.addEventListener("visibilitychange", async () => {
+    if (!document.hidden && prompter.playing && !prompter.wakeLock) {
+      try {
+        prompter.wakeLock = await navigator.wakeLock?.request("screen");
+      } catch {
+        prompter.wakeLock = null;
+      }
+    }
+  });
+}
+
 // --- Keyboard shortcuts ---
 
 function openShortcuts() {
@@ -1596,6 +1809,11 @@ let goToTimer = null;
 
 document.addEventListener("keydown", (e) => {
   if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+
+  if (!els.prompter.hidden) {
+    handlePrompterKey(e);
+    return;
+  }
 
   if (e.key === "Escape" && !els.readerPrefs.hidden) {
     setPrefsOpen(false);
@@ -1708,6 +1926,7 @@ async function init() {
   initSelectionCapture();
   initNotebookReorder();
   initReaderPrefs();
+  initPrompter();
   enterMobileScreen("list", "DisciplineFeed");
   try {
     await loadFeeds();

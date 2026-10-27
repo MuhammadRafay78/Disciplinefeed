@@ -89,6 +89,11 @@ const els = {
   shortcutsDialog: document.getElementById("shortcutsDialog"),
   shortcutsHintBtn: document.getElementById("shortcutsHintBtn"),
   shortcutsCloseBtn: document.getElementById("shortcutsCloseBtn"),
+  readerPrefsBtn: document.getElementById("readerPrefsBtn"),
+  readerPrefs: document.getElementById("readerPrefs"),
+  textSmallerBtn: document.getElementById("textSmallerBtn"),
+  textLargerBtn: document.getElementById("textLargerBtn"),
+  textSizeValue: document.getElementById("textSizeValue"),
 };
 
 const AVATAR_COLORS = ["#a8542e", "#4a6d5c", "#7a5ca8", "#2e6b8a", "#a8792e", "#8a3f5c", "#3f7a4a"];
@@ -1205,6 +1210,72 @@ function initSelectionCapture() {
   });
 }
 
+// --- Reading preferences (per device; prefs.js re-applies them before first paint) ---
+
+const PREFS_KEY = "df:prefs";
+const TEXT_SIZES = [15, 17, 19, 21, 23, 26];
+const DEFAULT_PREFS = { theme: "auto", font: "serif", textSize: 19 };
+
+function readPrefs() {
+  try {
+    return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") };
+  } catch {
+    return { ...DEFAULT_PREFS };
+  }
+}
+
+function applyPrefs(prefs) {
+  const root = document.documentElement;
+  if (prefs.theme === "light" || prefs.theme === "dark") root.dataset.theme = prefs.theme;
+  else delete root.dataset.theme;
+  if (prefs.font === "sans") root.dataset.readerFont = "sans";
+  else delete root.dataset.readerFont;
+  root.style.setProperty("--reader-font-size", `${prefs.textSize}px`);
+
+  els.textSizeValue.textContent = `${prefs.textSize}px`;
+  els.textSmallerBtn.disabled = prefs.textSize <= TEXT_SIZES[0];
+  els.textLargerBtn.disabled = prefs.textSize >= TEXT_SIZES[TEXT_SIZES.length - 1];
+  els.readerPrefs.querySelectorAll(".segmented[data-pref] button").forEach((btn) => {
+    const pref = btn.parentElement.dataset.pref;
+    btn.setAttribute("aria-pressed", String(prefs[pref] === btn.dataset.value));
+  });
+}
+
+function updatePrefs(change) {
+  const prefs = { ...readPrefs(), ...change };
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // Not persisted (storage blocked), but still applied for this visit.
+  }
+  applyPrefs(prefs);
+}
+
+function stepTextSize(direction) {
+  const current = readPrefs().textSize;
+  const next =
+    direction > 0 ? TEXT_SIZES.find((size) => size > current) : [...TEXT_SIZES].reverse().find((size) => size < current);
+  if (next) updatePrefs({ textSize: next });
+}
+
+function setPrefsOpen(open) {
+  els.readerPrefs.hidden = !open;
+  els.readerPrefsBtn.setAttribute("aria-expanded", String(open));
+}
+
+function initReaderPrefs() {
+  applyPrefs(readPrefs());
+  els.readerPrefsBtn.addEventListener("click", () => setPrefsOpen(els.readerPrefs.hidden));
+  els.textSmallerBtn.addEventListener("click", () => stepTextSize(-1));
+  els.textLargerBtn.addEventListener("click", () => stepTextSize(1));
+  els.readerPrefs.querySelectorAll(".segmented[data-pref] button").forEach((btn) => {
+    btn.addEventListener("click", () => updatePrefs({ [btn.parentElement.dataset.pref]: btn.dataset.value }));
+  });
+  document.addEventListener("click", (e) => {
+    if (!els.readerPrefs.hidden && !e.target.closest(".reader-prefs-wrap")) setPrefsOpen(false);
+  });
+}
+
 // --- Keyboard shortcuts ---
 
 function openShortcuts() {
@@ -1235,6 +1306,12 @@ let goToTimer = null;
 
 document.addEventListener("keydown", (e) => {
   if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+
+  if (e.key === "Escape" && !els.readerPrefs.hidden) {
+    setPrefsOpen(false);
+    els.readerPrefsBtn.focus();
+    return;
+  }
 
   if (!els.shortcutsDialog.hidden) {
     if (e.key === "Escape" || e.key === "?") {
@@ -1308,6 +1385,7 @@ async function init() {
   renderStaticFilters();
   initSelectionCapture();
   initNotebookReorder();
+  initReaderPrefs();
   enterMobileScreen("list", "DisciplineFeed");
   try {
     await loadFeeds();

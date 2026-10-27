@@ -10,6 +10,7 @@
     content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src * data: blob:; media-src *; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'"
   />
   <title>DisciplineFeed</title>
+  <script src="/prefs.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -127,6 +128,34 @@
             </button>
             <button id="readToggleBtn" class="pill-btn" title="Mark unread (m)">Mark unread</button>
             <a id="readerSourceLink" href="#" target="_blank" rel="noopener noreferrer" title="Open original (o)">Open original ↗</a>
+            <div class="reader-prefs-wrap">
+              <button id="readerPrefsBtn" class="pill-btn reader-prefs-btn" title="Reading settings" aria-expanded="false" aria-controls="readerPrefs">Aa</button>
+              <div id="readerPrefs" class="reader-prefs" hidden>
+                <div class="pref-row">
+                  <span class="pref-label">Text size</span>
+                  <div class="segmented">
+                    <button id="textSmallerBtn" aria-label="Smaller text">A−</button>
+                    <button id="textSizeValue" class="text-size-value" disabled></button>
+                    <button id="textLargerBtn" aria-label="Larger text">A+</button>
+                  </div>
+                </div>
+                <div class="pref-row">
+                  <span class="pref-label">Font</span>
+                  <div class="segmented" data-pref="font">
+                    <button data-value="serif">Serif</button>
+                    <button data-value="sans">Sans</button>
+                  </div>
+                </div>
+                <div class="pref-row">
+                  <span class="pref-label">Theme</span>
+                  <div class="segmented" data-pref="theme">
+                    <button data-value="auto">Auto</button>
+                    <button data-value="light">Light</button>
+                    <button data-value="dark">Dark</button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </header>
         <div id="readerBody" class="reader-body"></div>

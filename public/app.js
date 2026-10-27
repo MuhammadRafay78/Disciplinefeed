@@ -111,6 +111,7 @@ const els = {
   mobileTitle: document.getElementById("mobileTitle"),
   sidebar: document.querySelector(".sidebar"),
   toast: document.getElementById("toast"),
+  offlineBanner: document.getElementById("offlineBanner"),
   schemaBanner: document.getElementById("schemaBanner"),
   schemaBannerCommands: document.getElementById("schemaBannerCommands"),
   schemaBannerCopyBtn: document.getElementById("schemaBannerCopyBtn"),
@@ -140,10 +141,18 @@ function avatarInitial(title) {
 }
 
 async function api(path, options) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+  } catch {
+    setOffline(true);
+    throw new Error("You're offline. This needs a connection.");
+  }
+  // The service worker marks responses it answered from the offline cache.
+  setOffline(res.headers.get("x-offline-cache") === "1");
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data.error || `Request failed (${res.status})`);
@@ -264,8 +273,8 @@ function setView(view) {
   els.readerPane.hidden = !inFeedLike;
   els.notebookPane.hidden = view !== "notebook";
   els.topicsBar.hidden = view !== "discover";
-  if (view === "notebook") loadHighlights();
-  if (view === "discover") loadTopics();
+  if (view === "notebook") loadHighlights().catch((err) => toast(err.message, "error"));
+  if (view === "discover") loadTopics().catch((err) => toast(err.message, "error"));
   updateStaticFilterActive();
   updateListHeader();
 }
@@ -629,14 +638,7 @@ async function fetchArticlePage(reset, token) {
     return;
   }
 
-  const params = new URLSearchParams();
-  if (state.feedId) params.set("feed_id", state.feedId);
-  if (state.filter === "unread") params.set("unread", "true");
-  if (state.filter === "saved") params.set("saved", "true");
-  if (state.query) params.set("q", state.query);
-  if (!reset && state.cursor) params.set("cursor", state.cursor);
-
-  const data = await api(`/api/articles?${params.toString()}`);
+  const data = await api(articleListPath(reset ? null : state.cursor));
   // A newer list request (filter change, new search keystroke) superseded this one.
   if (token !== listRequestToken) return;
   if (reset) {
@@ -655,6 +657,17 @@ async function fetchArticlePage(reset, token) {
   els.filteredEmptyState.hidden = !(empty && state.feeds.length > 0);
   if (empty) renderFilteredEmptyState();
   updateListHeader();
+}
+
+// The first page (cursor null) or a later one of the list currently shown.
+function articleListPath(cursor) {
+  const params = new URLSearchParams();
+  if (state.feedId) params.set("feed_id", state.feedId);
+  if (state.filter === "unread") params.set("unread", "true");
+  if (state.filter === "saved") params.set("saved", "true");
+  if (state.query) params.set("q", state.query);
+  if (cursor) params.set("cursor", cursor);
+  return `/api/articles?${params.toString()}`;
 }
 
 function renderFilteredEmptyState() {
@@ -1103,6 +1116,7 @@ async function toggleSave() {
     if (source && res.is_saved) {
       source.querySelector("span:not(.unread-dot)").insertAdjacentHTML("afterend", '<span class="saved-mark" title="Saved">★</span>');
     }
+    if (res.is_saved) precacheArticle(article.id);
     toast(res.is_saved ? "Saved" : "Removed from Saved");
   } catch (err) {
     toast(err.message, "error");
@@ -2388,6 +2402,77 @@ els.schemaBannerCloseBtn.addEventListener("click", () => {
   els.schemaBanner.hidden = true;
 });
 
+// --- Offline reading (see sw.js): network-first, with cached copies when the network is gone ---
+
+const PRECACHE_CONCURRENCY = 3;
+
+function setOffline(offline) {
+  if (els.offlineBanner.hidden === !offline) return;
+  els.offlineBanner.hidden = !offline;
+  document.body.classList.toggle("is-offline", offline);
+}
+
+window.addEventListener("offline", () => setOffline(true));
+window.addEventListener("online", () => {
+  setOffline(false);
+  syncInBackground();
+});
+
+// Resolves to whether the page ended up controlled by the worker, and whether it was already.
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return null;
+  const wasControlled = Boolean(navigator.serviceWorker.controller);
+  try {
+    await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+  } catch {
+    return null;
+  }
+  // The worker claims open pages on activation; wait for that on the very first visit.
+  if (!navigator.serviceWorker.controller) {
+    await new Promise((resolve) => {
+      navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
+      setTimeout(resolve, 5000);
+    });
+  }
+  return navigator.serviceWorker.controller ? { wasControlled } : null;
+}
+
+// Fetches an article without opening it (no read mark, no streak) so the worker keeps a copy.
+async function precacheArticle(id) {
+  if (!navigator.serviceWorker?.controller || !navigator.onLine) return;
+  const path = `/api/articles/${id}`;
+  if (await caches.match(path)) return;
+  await fetch(`${path}?peek=1`).catch(() => {});
+}
+
+// On a first visit the page loads its data before the worker controls it, so nothing was cached.
+// Fetch it again once the worker is in charge (it keeps copies on the way through).
+async function warmOfflineCache() {
+  const paths = ["/api/feeds", articleListPath(null), "/api/articles?in_progress=true&limit=5", "/api/stats/reading", "/api/scripts"];
+  if (scripts.currentId) paths.push(`/api/highlights?script_id=${scripts.currentId}`);
+  await Promise.all(paths.map((path) => fetch(path).catch(() => {})));
+}
+
+// Saved and in-progress articles are the ones most worth having on a plane; keep copies of them.
+async function precacheForOffline() {
+  if (!navigator.serviceWorker?.controller || !navigator.onLine) return;
+  try {
+    const [saved, inProgress] = await Promise.all([
+      api("/api/articles?saved=true&limit=50"),
+      api("/api/articles?in_progress=true&limit=20"),
+    ]);
+    const ids = [...new Set([...saved.articles, ...inProgress.articles].map((a) => a.id))];
+    let next = 0;
+    const worker = async () => {
+      while (next < ids.length) await precacheArticle(ids[next++]);
+    };
+    await Promise.all(Array.from({ length: PRECACHE_CONCURRENCY }, worker));
+  } catch {
+    // Best effort; the next visit tries again.
+  }
+}
+
 // --- Init ---
 
 async function init() {
@@ -2408,6 +2493,11 @@ async function init() {
     loadScripts().catch(() => {});
   } catch (err) {
     toast(err.message, "error");
+  }
+  const worker = await registerServiceWorker();
+  if (worker) {
+    if (!worker.wasControlled) await warmOfflineCache();
+    precacheForOffline();
   }
 }
 

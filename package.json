@@ -10,7 +10,7 @@
     "db:init:remote": "wrangler d1 execute disciplinefeed-db --remote --file=./schema.sql",
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.ts\"",
-    "check:client": "node --check public/app.js"
+    "check:client": "node --check public/app.js && node --check public/sw.js && node --check public/prefs.js"
   },
   "dependencies": {
     "fast-xml-parser": "^4.5.0",

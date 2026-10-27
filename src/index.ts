@@ -281,11 +281,14 @@ app.get("/api/articles/:id", async (c) => {
     .bind(id)
     .first<Record<string, unknown>>();
   if (!article) return c.json({ error: "Article not found" }, 404);
+  // ?peek=1 fetches without opening: used to save articles for offline reading, so it mustn't mark
+  // them read or count them toward the streak.
+  const peek = c.req.query("peek") === "1";
   const writes = [];
-  if (!article.is_read) writes.push(c.env.DB.prepare("UPDATE articles SET is_read = 1 WHERE id = ?").bind(id));
+  if (!article.is_read && !peek) writes.push(c.env.DB.prepare("UPDATE articles SET is_read = 1 WHERE id = ?").bind(id));
   // The client sends its local date, since "today" for a streak depends on the reader's timezone.
   const day = c.req.query("day");
-  const logsDay = day !== undefined && isCalendarDay(day);
+  const logsDay = !peek && day !== undefined && isCalendarDay(day);
   if (logsDay) writes.push(c.env.DB.prepare("INSERT OR IGNORE INTO reading_log (day, article_id) VALUES (?, ?)").bind(day, id));
   const results = writes.length ? await c.env.DB.batch(writes) : [];
   article.first_read_today = logsDay && results[results.length - 1].meta.changes > 0;

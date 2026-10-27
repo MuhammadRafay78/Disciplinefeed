@@ -12,6 +12,7 @@ A personal RSS reader for discipline, focus and self-improvement writing, plus a
 - **Discover**: track topic keywords to surface the best-matching articles across your subscriptions, and find new Substacks for a topic.
 - **My List**: select text while reading and tap **+ Add to my list**, or jot your own notes. Drag snippets into order, check the word count and estimated speaking time, then **Copy all** (or download as Markdown) to get a script draft with a sources list. **Clear** empties a script, with Undo.
 - **Multiple scripts**: keep a separate script per video. New snippets go to the script you last selected (the "+ Add to …" button names it, and it's the same on every device). Rename, duplicate (e.g. to cut a shorter version) or delete a script, and move a snippet between scripts.
+- **Offline reading**: articles you've opened, plus everything Saved or in Continue Reading, stay readable without a connection, along with your lists and scripts. Changes still need a connection. Online, the app always loads fresh from the network, so a deploy shows up on the next reload.
 - **Teleprompter**: read your My List script on camera. It scrolls at a words-per-minute pace you set, with a 3-2-1 countdown, tap or Space to pause, mirror mode for teleprompter glass, and keeps the phone screen awake while running.
 
 ### Keyboard shortcuts
@@ -93,6 +94,7 @@ src/discover.ts         Topic scoring for Discover
 src/discoverSources.ts  Finding Substacks for a topic
 src/pagination.ts       Article list cursors
 public/                 The web app (plain HTML/CSS/JS, no build step)
+public/sw.js            Service worker for offline reading (network-first)
 test/                   Unit tests (node:test)
 ```
 

@@ -1396,6 +1396,29 @@ body.prompter-open { overflow: hidden; }
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- Offline banner ---------- */
+
+.offline-banner {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 170;
+  max-width: calc(100vw - 24px);
+  padding: 7px 14px;
+  border: 1px solid var(--star);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--star) 18%, var(--panel-bg-raised));
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+@media (max-width: 900px) {
+  .offline-banner { top: 60px; }
+}
+
 /* ---------- Missing-migration banner ---------- */
 
 .schema-banner {

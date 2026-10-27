@@ -213,7 +213,11 @@ app.post("/api/articles/:id/save", async (c) => {
 });
 
 app.get("/api/highlights", async (c) => {
-  const { results } = await c.env.DB.prepare("SELECT * FROM highlights ORDER BY position ASC, id ASC").all();
+  const articleId = c.req.query("article_id");
+  const stmt = articleId
+    ? c.env.DB.prepare("SELECT * FROM highlights WHERE article_id = ? ORDER BY position ASC, id ASC").bind(Number(articleId))
+    : c.env.DB.prepare("SELECT * FROM highlights ORDER BY position ASC, id ASC");
+  const { results } = await stmt.all();
   return c.json(results);
 });
 

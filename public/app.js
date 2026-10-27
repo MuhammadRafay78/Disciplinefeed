@@ -789,6 +789,7 @@ async function selectArticle(id) {
   els.readerBody.innerHTML = article.content_html || `<p>${escapeHtml(article.summary || "No preview available.")}</p>`;
   updateSaveBtn(!!article.is_saved);
   updateReadToggleBtn(true);
+  highlightSavedSnippets(article.id, token);
 
   const shortTitle = article.title.length > 26 ? `${article.title.slice(0, 26)}…` : article.title;
   enterMobileScreen("reader", shortTitle);
@@ -809,6 +810,74 @@ async function selectArticle(id) {
     scheduleProgressSave(id, fraction);
   };
   els.readerPane.addEventListener("scroll", readerScrollHandler);
+}
+
+// --- Saved snippets, highlighted in the article they came from ---
+// Uses the CSS Custom Highlight API, which paints ranges without touching the article's DOM.
+
+const savedSnippetHighlight = window.CSS?.highlights && window.Highlight ? new Highlight() : null;
+if (savedSnippetHighlight) CSS.highlights.set("saved-snippet", savedSnippetHighlight);
+
+const BLOCK_SELECTOR = "p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, td, th, figcaption, div";
+
+// Flattens the article's text into one whitespace-collapsed string, with a map from each character
+// back to its text node and offset. Block boundaries count as a space, matching how a copied
+// selection reads, so snippets that span paragraphs or inline formatting still line up.
+function indexText(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let flat = "";
+  const map = [];
+  let previousBlock = null;
+  let lastWasSpace = true;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const block = node.parentElement?.closest(BLOCK_SELECTOR) ?? null;
+    if (previousBlock && block !== previousBlock && !lastWasSpace) {
+      flat += " ";
+      map.push(null);
+      lastWasSpace = true;
+    }
+    previousBlock = block;
+    const text = node.nodeValue;
+    for (let i = 0; i < text.length; i++) {
+      const isSpace = /\s/.test(text[i]);
+      if (isSpace && lastWasSpace) continue;
+      flat += isSpace ? " " : text[i];
+      map.push([node, i]);
+      lastWasSpace = isSpace;
+    }
+  }
+  return { flat, map };
+}
+
+function rangeForSnippet(index, snippet) {
+  const needle = snippet.replace(/\s+/g, " ").trim();
+  if (needle.length < 3) return null;
+  const at = index.flat.indexOf(needle);
+  if (at === -1) return null;
+  const first = index.map[at];
+  const last = index.map[at + needle.length - 1];
+  if (!first || !last) return null;
+  const range = document.createRange();
+  range.setStart(first[0], first[1]);
+  range.setEnd(last[0], last[1] + 1);
+  return range;
+}
+
+async function highlightSavedSnippets(articleId, token) {
+  if (!savedSnippetHighlight) return;
+  savedSnippetHighlight.clear();
+  let snippets;
+  try {
+    snippets = await api(`/api/highlights?article_id=${articleId}`);
+  } catch {
+    return; // Purely decorative; the article is already readable.
+  }
+  if (token !== selectRequestToken || snippets.length === 0) return;
+  const index = indexText(els.readerBody);
+  for (const snippet of snippets) {
+    const range = rangeForSnippet(index, snippet.text);
+    if (range) savedSnippetHighlight.add(range);
+  }
 }
 
 function renderReaderMeta(article) {
@@ -1230,7 +1299,8 @@ function initSelectionCapture() {
     if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
     const text = sel.toString().trim();
     if (!text || !els.readerBody.contains(sel.anchorNode)) return null;
-    return { text, rect: sel.getRangeAt(0).getBoundingClientRect() };
+    const range = sel.getRangeAt(0);
+    return { text, rect: range.getBoundingClientRect(), range: range.cloneRange() };
   }
 
   function update() {
@@ -1240,6 +1310,7 @@ function initSelectionCapture() {
       return;
     }
     btn.dataset.text = found.text;
+    btn.range = found.range;
     btn.hidden = false;
     const { rect } = found;
     const width = btn.offsetWidth;
@@ -1280,6 +1351,7 @@ function initSelectionCapture() {
   btn.addEventListener("click", async () => {
     const text = btn.dataset.text;
     if (!text) return;
+    const range = btn.range;
     btn.hidden = true;
     window.getSelection()?.removeAllRanges();
     try {
@@ -1293,6 +1365,7 @@ function initSelectionCapture() {
           feedTitle: currentArticle?.feed_title ?? null,
         }),
       });
+      if (range && savedSnippetHighlight) savedSnippetHighlight.add(range);
       toast("Added to My List");
     } catch (err) {
       toast(err.message, "error");

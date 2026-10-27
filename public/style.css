@@ -851,6 +851,8 @@ kbd {
   line-height: 1.75;
   color: var(--text);
 }
+/* The first block contains its own drop cap, so a short opening paragraph doesn't push it into the next one. */
+.reader-body > *:first-child { display: flow-root; }
 .reader-body > *:first-child::first-letter {
   font-size: 3.4em;
   font-weight: 700;
@@ -893,6 +895,11 @@ kbd {
 .reader-body ul, .reader-body ol { padding-left: 1.3em; }
 .reader-body li { margin-bottom: 0.5em; }
 .reader-body hr { border: none; border-top: 1px solid var(--border-soft); margin: 2.5em 0; }
+
+/* Text already saved to My List, painted via the CSS Custom Highlight API. */
+::highlight(saved-snippet) {
+  background-color: rgba(217, 164, 65, 0.32);
+}
 
 /* ---------- Text-selection "Add to my list" button ---------- */
 

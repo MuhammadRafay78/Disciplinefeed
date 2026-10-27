@@ -3,7 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Article bodies are third-party HTML rendered on this origin; the server sanitizes them, and this
+       policy is the backstop: no inline or foreign script, so a missed javascript: URL can't run. -->
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src * data: blob:; media-src *; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'"
+  />
   <title>DisciplineFeed</title>
+  <meta name="description" content="Read what sharpens you, and turn the best lines into scripts." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#f7f4ee" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#16140f" media="(prefers-color-scheme: dark)" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Discipline" />
+  <script src="/prefs.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -27,7 +44,7 @@
           <span class="brand-mark">D</span>
           <h1>DisciplineFeed</h1>
         </div>
-        <button id="refreshAllBtn" class="icon-btn" title="Refresh all feeds">⟳</button>
+        <button id="refreshAllBtn" class="icon-btn" title="Refresh all feeds (r)">⟳</button>
       </div>
 
       <form id="addFeedForm" class="add-feed-form">
@@ -39,36 +56,65 @@
       <nav class="feed-list">
         <button class="feed-item active" data-feed-id="">
           <span class="feed-icon">◆</span>
-          <span>All articles</span>
+          <span class="feed-label">All articles</span>
         </button>
         <button class="feed-item" data-feed-id="" data-filter="unread">
           <span class="feed-icon">●</span>
-          <span>Unread</span>
+          <span class="feed-label">Unread</span>
+          <span id="unreadTotal" class="nav-count" hidden></span>
         </button>
         <button class="feed-item" data-feed-id="" data-filter="saved">
           <span class="feed-icon">★</span>
-          <span>Saved</span>
+          <span class="feed-label">Saved</span>
         </button>
         <button class="feed-item" id="myListNavBtn">
           <span class="feed-icon">✎</span>
-          <span>My List</span>
+          <span class="feed-label">My List</span>
         </button>
         <button class="feed-item" id="discoverNavBtn">
           <span class="feed-icon">⚡</span>
-          <span>Discover</span>
+          <span class="feed-label">Discover</span>
         </button>
       </nav>
+
+      <div id="streakCard" class="streak-card" hidden>
+        <div class="streak-head">
+          <span id="streakCount" class="streak-count"></span>
+          <span id="streakToday" class="streak-today"></span>
+        </div>
+        <div id="streakDots" class="streak-dots"></div>
+      </div>
 
       <div id="continueReadingSection" hidden>
         <div class="feed-list-divider">Continue Reading</div>
         <nav id="continueReadingList" class="feed-list"></nav>
       </div>
 
-      <div class="feed-list-divider">Subscriptions</div>
+      <div class="feed-list-divider divider-with-actions">
+        <span>Subscriptions</span>
+        <span class="divider-actions">
+          <button id="importOpmlBtn" class="link-btn" title="Import subscriptions from another reader (OPML file)">Import</button>
+          <span aria-hidden="true">·</span>
+          <a class="link-btn" href="/api/opml" download title="Download your subscriptions as an OPML file">Export</a>
+        </span>
+      </div>
+      <input id="opmlFileInput" type="file" accept=".opml,.xml,text/xml,application/xml,text/x-opml" hidden />
       <nav id="feedList" class="feed-list"></nav>
+
+      <button id="shortcutsHintBtn" class="shortcuts-hint">Keyboard shortcuts <kbd>?</kbd></button>
     </aside>
 
     <main id="articleListPane" class="article-list-pane">
+      <div class="list-toolbar">
+        <div class="list-heading">
+          <h2 id="listTitle">All articles</h2>
+          <span id="listMeta" class="list-meta"></span>
+        </div>
+        <div id="listActions" class="list-actions">
+          <input id="searchInput" class="search-input" type="search" placeholder="Search articles…" aria-label="Search articles" />
+          <button id="markAllReadBtn" class="toolbar-btn" title="Mark all as read (Shift+A)">✓ Mark all read</button>
+        </div>
+      </div>
       <div id="topicsBar" class="topics-bar" hidden>
         <form id="topicAddForm" class="topic-add-form">
           <input id="topicAddInput" type="text" placeholder="Add a topic, e.g. discipline" maxlength="40" required />
@@ -77,11 +123,16 @@
         <div id="topicChips" class="topic-chips"></div>
         <div id="sourceSuggestions" class="source-suggestions" hidden></div>
       </div>
+      <button id="newArticlesBtn" class="new-articles-pill" hidden></button>
       <div id="articleList" class="article-list"></div>
       <button id="loadMoreBtn" class="load-more-btn" hidden>Load more</button>
       <div id="emptyState" class="empty-state" hidden>
         <p class="empty-state-title">Your feed is empty</p>
         <p class="empty-state-body">Paste a link to a Substack or blog you read for discipline, focus, or self-improvement — most publications expose an RSS feed at <code>/feed</code>.</p>
+      </div>
+      <div id="filteredEmptyState" class="empty-state" hidden>
+        <p id="filteredEmptyTitle" class="empty-state-title">Nothing here</p>
+        <p id="filteredEmptyBody" class="empty-state-body"></p>
       </div>
       <div id="discoverEmptyState" class="empty-state" hidden>
         <p class="empty-state-title">No badass articles yet</p>
@@ -97,20 +148,41 @@
       <article id="reader" class="reader" hidden>
         <header>
           <h2 id="readerTitle"></h2>
-          <div class="reader-meta">
-            <span id="readerFeed" class="reader-meta-feed"></span>
-            <span class="reader-meta-dot">·</span>
-            <span id="readerAuthor"></span>
-            <span class="reader-meta-dot">·</span>
-            <span id="readerDate"></span>
-            <span class="reader-meta-dot">·</span>
-            <span id="readerReadingTime"></span>
-          </div>
+          <div id="readerMeta" class="reader-meta"></div>
           <div class="reader-actions">
-            <button id="saveBtn" class="save-btn" title="Save">
+            <button id="saveBtn" class="pill-btn save-btn" title="Save (s)">
               <span class="save-icon">☆</span> Save
             </button>
-            <a id="readerSourceLink" href="#" target="_blank" rel="noopener noreferrer">Open original ↗</a>
+            <button id="readToggleBtn" class="pill-btn" title="Mark unread (m)">Mark unread</button>
+            <a id="readerSourceLink" href="#" target="_blank" rel="noopener noreferrer" title="Open original (o)">Open original ↗</a>
+            <div class="reader-prefs-wrap">
+              <button id="readerPrefsBtn" class="pill-btn reader-prefs-btn" title="Reading settings" aria-expanded="false" aria-controls="readerPrefs">Aa</button>
+              <div id="readerPrefs" class="reader-prefs" hidden>
+                <div class="pref-row">
+                  <span class="pref-label">Text size</span>
+                  <div class="segmented">
+                    <button id="textSmallerBtn" aria-label="Smaller text">A−</button>
+                    <button id="textSizeValue" class="text-size-value" disabled></button>
+                    <button id="textLargerBtn" aria-label="Larger text">A+</button>
+                  </div>
+                </div>
+                <div class="pref-row">
+                  <span class="pref-label">Font</span>
+                  <div class="segmented" data-pref="font">
+                    <button data-value="serif">Serif</button>
+                    <button data-value="sans">Sans</button>
+                  </div>
+                </div>
+                <div class="pref-row">
+                  <span class="pref-label">Theme</span>
+                  <div class="segmented" data-pref="theme">
+                    <button data-value="auto">Auto</button>
+                    <button data-value="light">Light</button>
+                    <button data-value="dark">Dark</button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </header>
         <div id="readerBody" class="reader-body"></div>
@@ -119,8 +191,29 @@
 
     <section id="notebookPane" class="notebook-pane" hidden>
       <div class="notebook-header">
-        <h2>My List</h2>
-        <p class="notebook-subtitle">Snippets you've selected while reading, plus anything you jot down yourself — edit freely to shape your script.</p>
+        <div>
+          <h2>My List</h2>
+          <div class="script-bar">
+            <select id="scriptSelect" class="script-select" aria-label="Script"></select>
+            <button id="newScriptBtn" class="toolbar-btn" title="Start another script">+ New</button>
+            <div class="script-menu-wrap">
+              <button id="scriptMenuBtn" class="toolbar-btn" title="Script options" aria-label="Script options" aria-haspopup="true" aria-expanded="false" aria-controls="scriptMenu">⋯</button>
+              <div id="scriptMenu" class="script-menu" hidden>
+                <button data-action="rename">Rename</button>
+                <button data-action="duplicate">Duplicate</button>
+                <button data-action="delete" class="danger">Delete script</button>
+              </div>
+            </div>
+          </div>
+          <p class="notebook-subtitle">Snippets you've selected while reading, plus anything you jot down yourself — edit freely and drag to shape your script.</p>
+          <p id="notebookStats" class="notebook-stats"></p>
+        </div>
+        <div class="notebook-actions">
+          <button id="prompterOpenBtn" class="toolbar-btn" title="Read your script on camera, auto-scrolling">▶ Teleprompter</button>
+          <button id="copyAllBtn" class="toolbar-btn" title="Copy every snippet, plus a sources list, to the clipboard">⧉ Copy all</button>
+          <button id="downloadMdBtn" class="toolbar-btn" title="Download the script as a Markdown file">↓ .md</button>
+          <button id="clearListBtn" class="toolbar-btn" title="Remove every snippet to start a new script">Clear</button>
+        </div>
       </div>
       <form id="notebookAddForm" class="notebook-add-form">
         <textarea id="notebookAddInput" placeholder="Write something…" rows="2"></textarea>
@@ -128,10 +221,69 @@
       </form>
       <div id="notebookList" class="notebook-list"></div>
       <div id="notebookEmpty" class="empty-state" hidden>
-        <p class="empty-state-title">Nothing here yet</p>
-        <p class="empty-state-body">Select text while reading an article and click "Add to my list", or jot a note above.</p>
+        <p class="empty-state-title">This script is empty</p>
+        <p class="empty-state-body">Select text while reading an article and tap "+ Add to …", or jot a note above.</p>
       </div>
     </section>
+  </div>
+
+  <div id="prompter" class="prompter" role="dialog" aria-modal="true" aria-label="Teleprompter" hidden>
+    <div id="prompterScroll" class="prompter-scroll">
+      <div id="prompterText" class="prompter-text"></div>
+    </div>
+    <div class="prompter-guide" aria-hidden="true"></div>
+    <div id="prompterCountdown" class="prompter-countdown" aria-live="assertive" hidden></div>
+    <div class="prompter-controls">
+      <button id="prompterPlayBtn" class="prompter-play">▶ Start</button>
+      <div class="prompter-group">
+        <button id="prompterSlowerBtn" aria-label="Slower (↓)">−</button>
+        <span id="prompterSpeed" class="prompter-value"></span>
+        <button id="prompterFasterBtn" aria-label="Faster (↑)">+</button>
+      </div>
+      <div class="prompter-group">
+        <button id="prompterSmallerBtn" aria-label="Smaller text">A−</button>
+        <button id="prompterLargerBtn" aria-label="Larger text">A+</button>
+      </div>
+      <button id="prompterMirrorBtn" aria-pressed="false" title="Flip horizontally, for teleprompter glass (m)">Mirror</button>
+      <button id="prompterRestartBtn" title="Back to the top (r)">↺</button>
+      <button id="prompterCloseBtn" aria-label="Close teleprompter (Esc)">✕</button>
+    </div>
+  </div>
+
+  <div id="schemaBanner" class="schema-banner" role="alert" hidden>
+    <div>
+      <strong>The database needs updating.</strong>
+      Run these, then reload:
+      <pre id="schemaBannerCommands"></pre>
+    </div>
+    <div class="schema-banner-actions">
+      <button id="schemaBannerCopyBtn" class="toolbar-btn">Copy</button>
+      <button id="schemaBannerCloseBtn" class="toolbar-btn" aria-label="Dismiss">✕</button>
+    </div>
+  </div>
+
+  <div id="offlineBanner" class="offline-banner" role="status" hidden>
+    Offline — showing saved copies. Saved and recently opened articles are readable.
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <div id="shortcutsDialog" class="dialog-backdrop" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle">
+      <h3 id="shortcutsTitle">Keyboard shortcuts</h3>
+      <dl class="shortcut-list">
+        <dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Next / previous article</dd>
+        <dt><kbd>o</kbd></dt><dd>Open original in a new tab</dd>
+        <dt><kbd>s</kbd></dt><dd>Save / unsave</dd>
+        <dt><kbd>m</kbd></dt><dd>Mark read / unread</dd>
+        <dt><kbd>/</kbd></dt><dd>Search</dd>
+        <dt><kbd>r</kbd></dt><dd>Refresh all feeds</dd>
+        <dt><kbd>Shift</kbd> + <kbd>A</kbd></dt><dd>Mark all as read</dd>
+        <dt><kbd>g</kbd> then <kbd>a</kbd> / <kbd>u</kbd> / <kbd>s</kbd> / <kbd>l</kbd> / <kbd>d</kbd></dt><dd>Go to All / Unread / Saved / My List / Discover</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close / leave search</dd>
+      </dl>
+      <button id="shortcutsCloseBtn" class="toolbar-btn">Close</button>
+    </div>
   </div>
 
   <script src="/app.js"></script>

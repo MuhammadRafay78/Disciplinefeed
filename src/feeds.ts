@@ -1,4 +1,5 @@
-import { parseFeed, sanitizeHtml, type ParsedArticle } from "./parse";
+import { decodeEntities, htmlToText, parseFeed, sanitizeHtml, type ParsedArticle } from "./parse";
+import { chunk, MAX_IDS_PER_STATEMENT, placeholders } from "./sql";
 
 const FETCH_HEADERS = {
   "User-Agent":
@@ -12,10 +13,37 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchFeedXml(url: string): Promise<{ body: string; finalUrl: string }> {
+interface CacheValidators {
+  etag: string | null;
+  lastModified: string | null;
+}
+
+type FeedFetch = { notModified: true } | { notModified: false; body: string; finalUrl: string; validators: CacheValidators };
+
+async function fetchFeedXml(url: string, validators?: CacheValidators): Promise<FeedFetch> {
+  const headers: Record<string, string> = { ...FETCH_HEADERS };
+  if (validators?.etag) headers["If-None-Match"] = validators.etag;
+  if (validators?.lastModified) headers["If-Modified-Since"] = validators.lastModified;
+
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
-    const res = await fetch(url, { headers: FETCH_HEADERS });
-    if (res.ok) return { body: await res.text(), finalUrl: res.url || url };
+    let res: Response;
+    try {
+      res = await fetch(url, { headers });
+    } catch (err) {
+      // A dropped connection is as transient as a 5xx; retry it the same way.
+      if (attempt === MAX_FETCH_ATTEMPTS) throw err;
+      await sleep(500 * 2 ** (attempt - 1));
+      continue;
+    }
+    if (res.status === 304) return { notModified: true };
+    if (res.ok) {
+      return {
+        notModified: false,
+        body: await res.text(),
+        finalUrl: res.url || url,
+        validators: { etag: res.headers.get("etag"), lastModified: res.headers.get("last-modified") },
+      };
+    }
 
     const retryable = res.status === 429 || res.status >= 500;
     if (!retryable || attempt === MAX_FETCH_ATTEMPTS) {
@@ -26,6 +54,13 @@ async function fetchFeedXml(url: string): Promise<{ body: string; finalUrl: stri
     await sleep(delayMs);
   }
   throw new Error("Failed to fetch feed");
+}
+
+// Unconditional fetch (no validators sent), so a 304 can't happen; narrows the result type.
+async function fetchFeedXmlFresh(url: string) {
+  const result = await fetchFeedXml(url);
+  if (result.notModified) throw new Error("Unexpected 304 fetching feed");
+  return result;
 }
 
 const FEED_LINK_TYPES = ["application/rss+xml", "application/atom+xml"];
@@ -54,29 +89,44 @@ async function discoverFeedUrl(html: string, pageUrl: string): Promise<string | 
   }
 }
 
-async function fetchAndParseFeed(url: string): Promise<{ feedUrl: string; parsed: ReturnType<typeof parseFeed> }> {
-  const { body, finalUrl } = await fetchFeedXml(url);
+async function fetchAndParseFeed(
+  url: string,
+): Promise<{ feedUrl: string; parsed: ReturnType<typeof parseFeed>; validators: CacheValidators }> {
+  const { body, finalUrl, validators } = await fetchFeedXmlFresh(url);
   try {
-    return { feedUrl: finalUrl, parsed: parseFeed(body) };
+    return { feedUrl: finalUrl, parsed: parseFeed(body), validators };
   } catch (err) {
     const discovered = await discoverFeedUrl(body, finalUrl);
     if (!discovered) throw err;
-    const { body: discoveredBody, finalUrl: discoveredFinalUrl } = await fetchFeedXml(discovered);
-    return { feedUrl: discoveredFinalUrl, parsed: parseFeed(discoveredBody) };
+    const fetched = await fetchFeedXmlFresh(discovered);
+    return { feedUrl: fetched.finalUrl, parsed: parseFeed(fetched.body), validators: fetched.validators };
   }
 }
 
 async function upsertArticles(db: D1Database, feedId: number, articles: ParsedArticle[]): Promise<number> {
-  const withUrl = articles.filter((a) => a.url);
-  if (withUrl.length === 0) return 0;
+  // Most refreshes re-deliver articles we already have; skip them up front rather than
+  // sanitizing every body only for the INSERT to be ignored. Only the guids in this fetch are
+  // looked up, so the cost doesn't grow with the feed's history.
+  const guids = [...new Set(articles.filter((a) => a.url).map((a) => a.guid))];
+  if (guids.length === 0) return 0;
+  const lookups = await db.batch<{ guid: string }>(
+    chunk(guids, MAX_IDS_PER_STATEMENT - 1).map((part) =>
+      db
+        .prepare(`SELECT guid FROM articles WHERE feed_id = ? AND guid IN (${placeholders(part.length)})`)
+        .bind(feedId, ...part),
+    ),
+  );
+  const known = new Set(lookups.flatMap((r) => r.results.map((row) => row.guid)));
+  const fresh = articles.filter((a) => a.url && !known.has(a.guid));
+  if (fresh.length === 0) return 0;
 
   const statements = await Promise.all(
-    withUrl.map(async (article) => {
+    fresh.map(async (article) => {
       const contentHtml = article.contentHtml ? await sanitizeHtml(article.contentHtml) : null;
       return db
         .prepare(
-          `INSERT INTO articles (feed_id, guid, title, url, author, published_at, summary, content_html)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO articles (feed_id, guid, title, url, author, published_at, summary, content_html, sort_at, content_text)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(feed_id, guid) DO NOTHING`,
         )
         .bind(
@@ -88,6 +138,8 @@ async function upsertArticles(db: D1Database, feedId: number, articles: ParsedAr
           article.publishedAt ?? null,
           article.summary ?? null,
           contentHtml,
+          article.sortAt,
+          contentHtml ? htmlToText(contentHtml) : "",
         );
     }),
   );
@@ -97,14 +149,14 @@ async function upsertArticles(db: D1Database, feedId: number, articles: ParsedAr
 }
 
 export async function addFeed(db: D1Database, inputUrl: string) {
-  const { feedUrl, parsed } = await fetchAndParseFeed(inputUrl);
+  const { feedUrl, parsed, validators } = await fetchAndParseFeed(inputUrl);
 
   const insertFeed = await db
     .prepare(
-      `INSERT INTO feeds (url, title, site_url, last_fetched_at, last_status)
-       VALUES (?, ?, ?, datetime('now'), 'ok')`,
+      `INSERT INTO feeds (url, title, site_url, last_fetched_at, last_status, etag, last_modified)
+       VALUES (?, ?, ?, datetime('now'), 'ok', ?, ?)`,
     )
-    .bind(feedUrl, parsed.title, parsed.siteUrl ?? null)
+    .bind(feedUrl, parsed.title, parsed.siteUrl ?? null, validators.etag, validators.lastModified)
     .run();
   const feedId = Number(insertFeed.meta.last_row_id);
 
@@ -112,14 +164,33 @@ export async function addFeed(db: D1Database, inputUrl: string) {
   return { feedId, title: parsed.title, newArticles };
 }
 
-export async function refreshFeed(db: D1Database, feed: { id: number; url: string }) {
+export interface FeedToRefresh {
+  id: number;
+  url: string;
+  etag: string | null;
+  last_modified: string | null;
+}
+
+export const FEED_REFRESH_COLUMNS = "id, url, etag, last_modified";
+
+export async function refreshFeed(db: D1Database, feed: FeedToRefresh) {
   try {
-    const { body } = await fetchFeedXml(feed.url);
-    const parsed = parseFeed(body);
+    const fetched = await fetchFeedXml(feed.url, { etag: feed.etag, lastModified: feed.last_modified });
+    if (fetched.notModified) {
+      await db
+        .prepare(`UPDATE feeds SET last_fetched_at = datetime('now'), last_status = 'ok' WHERE id = ?`)
+        .bind(feed.id)
+        .run();
+      return { newArticles: 0, error: undefined as string | undefined };
+    }
+    const parsed = parseFeed(fetched.body);
     const newArticles = await upsertArticles(db, feed.id, parsed.articles);
     await db
-      .prepare(`UPDATE feeds SET last_fetched_at = datetime('now'), last_status = 'ok' WHERE id = ?`)
-      .bind(feed.id)
+      .prepare(
+        `UPDATE feeds SET last_fetched_at = datetime('now'), last_status = 'ok', etag = ?, last_modified = ?
+         WHERE id = ?`,
+      )
+      .bind(fetched.validators.etag, fetched.validators.lastModified, feed.id)
       .run();
     return { newArticles, error: undefined as string | undefined };
   } catch (err) {
@@ -135,7 +206,7 @@ export async function refreshFeed(db: D1Database, feed: { id: number; url: strin
 const REFRESH_CONCURRENCY = 5;
 
 export async function refreshAllFeeds(db: D1Database) {
-  const { results } = await db.prepare("SELECT id, url FROM feeds").all<{ id: number; url: string }>();
+  const { results } = await db.prepare(`SELECT ${FEED_REFRESH_COLUMNS} FROM feeds`).all<FeedToRefresh>();
   const details: Array<{ feedId: number; newArticles: number; error?: string }> = [];
 
   let nextIndex = 0;
@@ -151,4 +222,39 @@ export async function refreshAllFeeds(db: D1Database) {
 
   const totalNew = details.reduce((sum, d) => sum + d.newArticles, 0);
   return { totalNew, details };
+}
+
+// Kept small so a scheduled run stays well inside the Workers CPU budget.
+const TEXT_BACKFILL_BATCH = 50;
+
+// Articles stored before content_text existed get it filled in a batch per scheduled run. Their
+// titles and summaries were also saved before HTML entities were decoded, so fix those in the same
+// pass; content_text being NULL is what marks a row as not yet processed, so none is decoded twice.
+// Rows the previous deploy wrote after the migrations ran (before this code went live) also lack
+// sort_at, which would keep them out of paged lists; fill that from the same formula as 0005.
+export async function backfillArticleText(db: D1Database): Promise<number> {
+  const { results } = await db
+    .prepare("SELECT id, title, summary, content_html FROM articles WHERE content_text IS NULL LIMIT ?")
+    .bind(TEXT_BACKFILL_BATCH)
+    .all<{ id: number; title: string; summary: string | null; content_html: string | null }>();
+  if (results.length === 0) return 0;
+  await db.batch(
+    results.map((row) =>
+      db
+        .prepare(
+          `UPDATE articles SET title = ?, summary = ?, content_text = ?,
+             sort_at = COALESCE(sort_at, MIN(
+               COALESCE(published_at, strftime('%Y-%m-%dT%H:%M:%fZ', fetched_at)),
+               strftime('%Y-%m-%dT%H:%M:%fZ', fetched_at)))
+           WHERE id = ?`,
+        )
+        .bind(
+          decodeEntities(row.title),
+          row.summary === null ? null : decodeEntities(row.summary),
+          row.content_html ? htmlToText(row.content_html) : "",
+          row.id,
+        ),
+    ),
+  );
+  return results.length;
 }

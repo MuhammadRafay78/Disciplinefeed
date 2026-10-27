@@ -49,6 +49,7 @@ const els = {
   searchInput: document.getElementById("searchInput"),
   markAllReadBtn: document.getElementById("markAllReadBtn"),
   articleList: document.getElementById("articleList"),
+  newArticlesBtn: document.getElementById("newArticlesBtn"),
   loadMoreBtn: document.getElementById("loadMoreBtn"),
   emptyState: document.getElementById("emptyState"),
   filteredEmptyState: document.getElementById("filteredEmptyState"),
@@ -211,13 +212,18 @@ function openDiscover() {
 function updateStaticFilterActive() {
   const items = document.querySelectorAll(".sidebar > .feed-list:first-of-type .feed-item");
   const inFeed = state.view === "feed";
-  items[0].classList.toggle("active", inFeed && state.feedId === null && state.filter === null);
-  items[1].classList.toggle("active", inFeed && state.feedId === null && state.filter === "unread");
-  items[2].classList.toggle("active", inFeed && state.feedId === null && state.filter === "saved");
-  els.myListNavBtn.classList.toggle("active", state.view === "notebook");
-  els.discoverNavBtn.classList.toggle("active", state.view === "discover");
+  const setActive = (el, active) => {
+    el.classList.toggle("active", active);
+    if (active) el.setAttribute("aria-current", "page");
+    else el.removeAttribute("aria-current");
+  };
+  setActive(items[0], inFeed && state.feedId === null && state.filter === null);
+  setActive(items[1], inFeed && state.feedId === null && state.filter === "unread");
+  setActive(items[2], inFeed && state.feedId === null && state.filter === "saved");
+  setActive(els.myListNavBtn, state.view === "notebook");
+  setActive(els.discoverNavBtn, state.view === "discover");
   els.feedList.querySelectorAll(".feed-row").forEach((row) => {
-    row.querySelector(".feed-item").classList.toggle("active", inFeed && Number(row.dataset.feedId) === state.feedId);
+    setActive(row.querySelector(".feed-item"), inFeed && Number(row.dataset.feedId) === state.feedId);
   });
 }
 
@@ -306,9 +312,9 @@ function renderFeeds() {
     };
     els.feedList.appendChild(row);
   }
-  const totalUnread = state.feeds.reduce((sum, f) => sum + (f.unread_count || 0), 0);
-  els.unreadTotal.textContent = totalUnread;
-  els.unreadTotal.hidden = totalUnread === 0;
+  const unread = totalUnread();
+  els.unreadTotal.textContent = unread;
+  els.unreadTotal.hidden = unread === 0;
   updateStaticFilterActive();
   updateListHeader();
 }
@@ -481,9 +487,13 @@ function listTitleText() {
   return "All articles";
 }
 
+function totalUnread() {
+  return state.feeds.reduce((sum, f) => sum + (f.unread_count || 0), 0);
+}
+
 function unreadInScope() {
   if (state.feedId !== null) return state.feeds.find((f) => f.id === state.feedId)?.unread_count ?? 0;
-  return state.feeds.reduce((sum, f) => sum + (f.unread_count || 0), 0);
+  return totalUnread();
 }
 
 function updateListHeader() {
@@ -547,6 +557,7 @@ async function fetchArticlePage(reset, token) {
     state.articles = [];
     state.maxId = data.maxId ?? null;
     els.articleListPane.scrollTop = 0;
+    els.newArticlesBtn.hidden = true;
   }
   state.articles.push(...data.articles);
   state.cursor = data.nextCursor;
@@ -619,7 +630,15 @@ function renderArticleList(articles, append) {
       <p class="article-summary">${summaryHtml(a)}</p>
       ${a.progress > 0.02 && a.progress < 0.95 ? `<div class="article-progress"><div class="article-progress-fill" style="width:${Math.round(a.progress * 100)}%"></div></div>` : ""}
     `;
+    item.tabIndex = 0;
+    item.setAttribute("role", "button");
     item.addEventListener("click", () => selectArticle(a.id));
+    item.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        selectArticle(a.id);
+      }
+    });
     els.articleList.appendChild(item);
   }
 }
@@ -1649,6 +1668,38 @@ document.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("beforeunload", flushProgress);
+
+// --- Staying fresh: the scheduled job adds articles while the app sits open or in the background ---
+
+const SYNC_INTERVAL_MS = 5 * 60 * 1000;
+const SYNC_ON_RETURN_AFTER_MS = 2 * 60 * 1000;
+let lastSyncAt = Date.now();
+
+// Updates counts quietly; new articles are announced rather than shuffled into the list.
+async function syncInBackground() {
+  lastSyncAt = Date.now();
+  const before = totalUnread();
+  try {
+    await loadFeeds();
+    loadContinueReading();
+  } catch {
+    return; // Offline or a blip; the next sync will catch up.
+  }
+  const arrived = totalUnread() - before;
+  if (arrived > 0 && state.view === "feed" && !state.query) {
+    els.newArticlesBtn.textContent = `↑ ${plural(arrived, "new article")}`;
+    els.newArticlesBtn.hidden = false;
+  }
+}
+
+els.newArticlesBtn.addEventListener("click", () => loadArticles(true));
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && Date.now() - lastSyncAt > SYNC_ON_RETURN_AFTER_MS) syncInBackground();
+});
+setInterval(() => {
+  if (!document.hidden) syncInBackground();
+}, SYNC_INTERVAL_MS);
 
 // --- Init ---
 

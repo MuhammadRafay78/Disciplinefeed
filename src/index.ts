@@ -99,6 +99,19 @@ app.get("/api/opml", async (c) => {
   });
 });
 
+const MAX_FEED_TITLE_LENGTH = 100;
+
+// Renames a subscription. Refreshes never overwrite the title, so the custom name sticks.
+app.patch("/api/feeds/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ title?: unknown }>().catch(() => ({}) as { title?: unknown });
+  const title = typeof body.title === "string" ? body.title.replace(/\s+/g, " ").trim().slice(0, MAX_FEED_TITLE_LENGTH) : "";
+  if (!title) return c.json({ error: "A feed needs a name" }, 400);
+  const result = await c.env.DB.prepare("UPDATE feeds SET title = ? WHERE id = ?").bind(title, id).run();
+  if (result.meta.changes === 0) return c.json({ error: "Feed not found" }, 404);
+  return c.json({ id, title });
+});
+
 app.delete("/api/feeds/:id", async (c) => {
   const id = Number(c.req.param("id"));
   await c.env.DB.batch([

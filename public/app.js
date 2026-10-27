@@ -307,7 +307,11 @@ async function loadFeeds() {
   renderFeeds();
 }
 
+let renamingFeedId = null;
+
 function renderFeeds() {
+  // Re-rendering would wipe out a rename in progress; the rename re-renders when it finishes.
+  if (renamingFeedId !== null) return;
   els.feedList.innerHTML = "";
   for (const feed of state.feeds) {
     const row = document.createElement("div");
@@ -322,9 +326,11 @@ function renderFeeds() {
         ${failing ? `<span class="feed-error" title="Last refresh failed: ${escapeHtml(errorDetail)}">!</span>` : ""}
         ${feed.unread_count > 0 ? `<span class="nav-count">${feed.unread_count}</span>` : ""}
       </button>
+      <button class="rename-feed" title="Rename" aria-label="Rename ${escapeHtml(feed.title)}">✎</button>
       <button class="remove-feed" title="Unsubscribe" aria-label="Unsubscribe from ${escapeHtml(feed.title)}">✕</button>
     `;
     row.querySelector(".feed-item").onclick = () => setFilter(feed.id, null);
+    row.querySelector(".rename-feed").onclick = () => startRenameFeed(row, feed);
     row.querySelector(".remove-feed").onclick = async () => {
       if (!confirm(`Remove "${feed.title}" and its articles?`)) return;
       try {
@@ -344,6 +350,58 @@ function renderFeeds() {
   els.unreadTotal.textContent = unread;
   els.unreadTotal.hidden = unread === 0;
   updateStaticFilterActive();
+  updateListHeader();
+}
+
+// Inline rename in the sidebar: Enter or leaving the field saves, Escape cancels.
+function startRenameFeed(row, feed) {
+  renamingFeedId = feed.id;
+  const input = document.createElement("input");
+  input.className = "feed-rename-input";
+  input.value = feed.title;
+  input.maxLength = 100;
+  input.setAttribute("aria-label", `New name for ${feed.title}`);
+  row.classList.add("renaming");
+  row.prepend(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const title = input.value.replace(/\s+/g, " ").trim();
+    if (save && title && title !== feed.title) {
+      try {
+        const renamed = await api(`/api/feeds/${feed.id}`, { method: "PATCH", body: JSON.stringify({ title }) });
+        feed.title = renamed.title;
+        showFeedTitle(feed.id, renamed.title);
+        toast(`Renamed to ${renamed.title}`);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    }
+    renamingFeedId = null;
+    renderFeeds();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") finish(true);
+    else if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+// Updates a renamed feed's title wherever it's already on screen, without reloading the list.
+function showFeedTitle(feedId, title) {
+  for (const a of state.articles) if (a.feed_id === feedId) a.feed_title = title;
+  els.articleList.querySelectorAll(`.article-item[data-feed-id="${feedId}"] .article-feed`).forEach((el) => {
+    el.textContent = title;
+  });
+  if (currentArticle?.feed_id === feedId) {
+    currentArticle.feed_title = title;
+    const metaFeed = els.readerMeta.querySelector(".reader-meta-feed");
+    if (metaFeed) metaFeed.textContent = title;
+  }
   updateListHeader();
 }
 
@@ -645,12 +703,13 @@ function renderArticleList(articles, append) {
     const item = document.createElement("div");
     item.className = `article-item ${a.is_read ? "read" : ""}`;
     item.dataset.id = a.id;
+    item.dataset.feedId = a.feed_id;
     item.classList.toggle("selected", state.selectedId === a.id);
     const scoreBadge = state.view === "discover" ? `<span class="discover-score">🔥 ${a.score}</span>` : "";
     item.innerHTML = `
       <div class="article-source">
         ${a.is_read ? "" : '<span class="unread-dot"></span>'}
-        <span>${escapeHtml(a.feed_title)} · ${formatRelative(a.published_at || a.sort_at)}</span>
+        <span><span class="article-feed">${escapeHtml(a.feed_title)}</span> · ${formatRelative(a.published_at || a.sort_at)}</span>
         ${a.is_saved ? '<span class="saved-mark" title="Saved">★</span>' : ""}
         ${scoreBadge}
       </div>

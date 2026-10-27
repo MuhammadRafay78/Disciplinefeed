@@ -5,6 +5,7 @@ A personal RSS reader for discipline, focus and self-improvement writing, plus a
 ## Features
 
 - Subscribe to any RSS/Atom feed or Substack (paste the site URL and the feed is found automatically). Feeds refresh every 30 minutes.
+- **Rename** any subscription from the sidebar (✎); refreshes keep your name.
 - Move subscriptions in or out with **Import / Export** (OPML, the format every RSS reader understands), next to the Subscriptions heading.
 - Reader with reading progress, a **Continue Reading** list, saved articles, unread counts, search and mark-all-read.
 - A **reading streak** in the sidebar: consecutive days you've opened at least one article, plus the last 7 days at a glance.

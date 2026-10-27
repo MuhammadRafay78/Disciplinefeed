@@ -362,11 +362,38 @@ body {
   border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
-.feed-row:hover .remove-feed, .feed-row .remove-feed:focus-visible { opacity: 1; }
-.feed-row .remove-feed:hover { color: #c0392b; }
-@media (hover: none) {
-  .feed-row .remove-feed { opacity: 0.6; }
+.feed-row .rename-feed {
+  opacity: 0;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 4px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
 }
+.feed-row:hover .remove-feed, .feed-row .remove-feed:focus-visible,
+.feed-row:hover .rename-feed, .feed-row .rename-feed:focus-visible { opacity: 1; }
+.feed-row .remove-feed:hover { color: #c0392b; }
+.feed-row .rename-feed:hover { color: var(--accent); }
+@media (hover: none) {
+  .feed-row .remove-feed, .feed-row .rename-feed { opacity: 0.6; }
+}
+.feed-row.renaming > :not(.feed-rename-input) { display: none; }
+.feed-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg-raised);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.feed-rename-input:focus { outline: none; }
 
 .shortcuts-hint {
   margin-top: auto;

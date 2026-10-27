@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeEntities, htmlToText, isSafeContentUrl, parseFeed, sortKeyFor } from "../src/parse.ts";
+import {
+  decodeEntities,
+  htmlToText,
+  iframeReplacement,
+  isSafeContentUrl,
+  parseFeed,
+  sortKeyFor,
+  youtubeVideoId,
+} from "../src/parse.ts";
 
 test("isSafeContentUrl allows http(s), mailto and relative URLs", () => {
   for (const url of ["https://example.com/a", "http://x.y", "mailto:a@b.c", "/relative", "page.html", "#top", "?q=1"]) {
@@ -98,4 +106,25 @@ test("parseFeed decodes HTML entities in titles and summaries", () => {
   const [article] = parseFeed(xml).articles;
   assert.equal(article.title, "Don’t quit");
   assert.equal(article.summary, "Fish & chips — tasty");
+});
+
+test("youtubeVideoId reads embed and short links", () => {
+  assert.equal(youtubeVideoId("https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0"), "dQw4w9WgXcQ");
+  assert.equal(youtubeVideoId("https://www.youtube-nocookie.com/embed/abc_DEF-123"), "abc_DEF-123");
+  assert.equal(youtubeVideoId("https://youtu.be/dQw4w9WgXcQ"), "dQw4w9WgXcQ");
+  assert.equal(youtubeVideoId("https://vimeo.com/123"), null);
+});
+
+test("iframeReplacement links to what the iframe showed, and only to safe https URLs", () => {
+  assert.equal(
+    iframeReplacement("https://www.youtube.com/embed/dQw4w9WgXcQ"),
+    '<p class="embed-link"><a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank" rel="noopener noreferrer">▶ Watch the video on YouTube</a></p>',
+  );
+  assert.match(
+    iframeReplacement("https://open.spotify.com/embed/episode/x?a=1&amp;b=2") ?? "",
+    /href="https:\/\/open\.spotify\.com\/embed\/episode\/x\?a=1&amp;b=2".*from open\.spotify\.com/,
+  );
+  assert.equal(iframeReplacement("javascript:alert(1)"), null);
+  assert.equal(iframeReplacement("http://insecure.test/embed"), null);
+  assert.equal(iframeReplacement('https://x.test/"><script>'), '<p class="embed-link"><a href="https://x.test/&quot;&gt;&lt;script&gt;" target="_blank" rel="noopener noreferrer">Open embedded content from x.test ↗</a></p>');
 });

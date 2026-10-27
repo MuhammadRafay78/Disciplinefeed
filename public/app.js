@@ -972,6 +972,16 @@ async function toggleRead() {
   adjustUnread(article.feed_id, nextRead ? -1 : 1);
 }
 
+// An image that fails to load (deleted from an old post, CDN refusing it) would otherwise keep its
+// reserved width × height as a blank gap. "error" doesn't bubble, so listen in the capture phase.
+els.readerBody.addEventListener(
+  "error",
+  (e) => {
+    if (e.target instanceof HTMLImageElement) e.target.classList.add("img-failed");
+  },
+  true,
+);
+
 els.saveBtn.addEventListener("click", toggleSave);
 els.readToggleBtn.addEventListener("click", toggleRead);
 

@@ -209,7 +209,6 @@ export function parseFeed(xml: string, now: Date = new Date()): ParsedFeed {
 const DANGEROUS_TAGS = [
   "script",
   "style",
-  "iframe",
   "frame",
   "frameset",
   "object",
@@ -222,6 +221,38 @@ const DANGEROUS_TAGS = [
   "svg",
   "math",
 ];
+
+// Inert page chrome in feed HTML (e.g. Substack's image expand/restack buttons) that does nothing
+// outside its own site.
+const CHROME_TAGS = ["button", "input", "select", "textarea"];
+
+// Substack "Subscribe now" / "Share" buttons; other author buttons (e.g. "Preorder") are kept.
+const SUBSTACK_PROMO_BUTTON = /\/subscribe\b|[?&]action=share\b|utm_content=share\b/;
+
+function escapeAttr(value: string): string {
+  return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
+}
+
+function embedLink(url: string, label: string): string {
+  return `<p class="embed-link"><a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeAttr(label)}</a></p>`;
+}
+
+export function youtubeVideoId(src: string): string | null {
+  return /(?:youtube(?:-nocookie)?\.com\/embed\/|youtu\.be\/)([\w-]{6,20})/.exec(src)?.[1] ?? null;
+}
+
+// Iframes can't run here, so rather than silently dropping one, leave a link to what it showed.
+export function iframeReplacement(rawSrc: string): string | null {
+  const src = decodeEntities(rawSrc).trim();
+  const videoId = youtubeVideoId(src);
+  if (videoId) return embedLink(`https://www.youtube.com/watch?v=${videoId}`, "▶ Watch the video on YouTube");
+  if (!/^https:\/\//i.test(src) || !isSafeContentUrl(src)) return null;
+  try {
+    return embedLink(src, `Open embedded content from ${new URL(src).hostname} ↗`);
+  } catch {
+    return null;
+  }
+}
 
 // Attributes a browser may load or navigate to as a URL.
 const URL_ATTRS = new Set(["href", "src", "xlink:href", "action", "formaction", "poster", "background", "data", "cite"]);
@@ -251,13 +282,43 @@ export function isSafeContentUrl(raw: string, allowDataImage = false): boolean {
 
 export async function sanitizeHtml(html: string): Promise<string> {
   let rewriter = new HTMLRewriter();
-  for (const tag of DANGEROUS_TAGS) {
+  for (const tag of [...DANGEROUS_TAGS, ...CHROME_TAGS]) {
     rewriter = rewriter.on(tag, {
       element(el) {
         el.remove();
       },
     });
   }
+  rewriter = rewriter
+    .on("iframe", {
+      element(el) {
+        const replacement = iframeReplacement(el.getAttribute("src") ?? "");
+        if (replacement) el.replace(replacement, { html: true });
+        else el.remove();
+      },
+    })
+    // Substack wraps YouTube embeds and keeps the video id in data-attrs; stored articles only
+    // have the (now empty) wrapper left, so this rebuilds the link for them too.
+    .on("div.youtube-wrap", {
+      element(el) {
+        const videoId = /"videoId":"([\w-]{6,20})"/.exec(decodeEntities(el.getAttribute("data-attrs") ?? ""))?.[1];
+        if (videoId) {
+          el.setInnerContent(embedLink(`https://www.youtube.com/watch?v=${videoId}`, "▶ Watch the video on YouTube"), {
+            html: true,
+          });
+        }
+      },
+    })
+    .on('div[class*="subscription-widget"]', {
+      element(el) {
+        el.remove();
+      },
+    })
+    .on("p.button-wrapper", {
+      element(el) {
+        if (SUBSTACK_PROMO_BUTTON.test(decodeEntities(el.getAttribute("data-attrs") ?? ""))) el.remove();
+      },
+    });
   rewriter = rewriter
     .on("*", {
       element(el) {
@@ -271,9 +332,14 @@ export async function sanitizeHtml(html: string): Promise<string> {
         }
       },
     })
-    // Links inside an article must never navigate the reader itself away from the app.
+    // Links inside an article must never navigate the reader itself away from the app; in-page
+    // jumps (footnotes) are the exception and stay in the reader.
     .on("a", {
       element(el) {
+        if ((el.getAttribute("href") ?? "").startsWith("#")) {
+          el.removeAttribute("target");
+          return;
+        }
         el.setAttribute("target", "_blank");
         el.setAttribute("rel", "noopener noreferrer");
       },

@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS highlights (
   article_title TEXT,
   article_url TEXT,
   feed_title TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Manual order in My List (ascending); new snippets go to the end.
+  position INTEGER
 );
 
 -- Keywords the user wants "badass" articles surfaced for, across all subscriptions.

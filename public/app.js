@@ -79,6 +79,7 @@ const els = {
   notebookList: document.getElementById("notebookList"),
   notebookEmpty: document.getElementById("notebookEmpty"),
   copyAllBtn: document.getElementById("copyAllBtn"),
+  notebookStats: document.getElementById("notebookStats"),
   mobileMenuBtn: document.getElementById("mobileMenuBtn"),
   mobileBackBtn: document.getElementById("mobileBackBtn"),
   mobileBackdrop: document.getElementById("mobileBackdrop"),
@@ -829,10 +830,31 @@ function autoGrow(textarea) {
 async function loadHighlights() {
   const highlights = await api("/api/highlights");
   els.notebookList.innerHTML = "";
-  els.notebookEmpty.hidden = highlights.length > 0;
-  els.copyAllBtn.disabled = highlights.length === 0;
   for (const h of highlights) renderHighlightItem(h);
+  updateNotebookChrome();
 }
+
+// Roughly how fast people talk on camera; used to estimate how long the script runs.
+const SPEAKING_WORDS_PER_MINUTE = 150;
+
+function updateNotebookChrome() {
+  const texts = [...els.notebookList.querySelectorAll(".highlight-text")];
+  els.notebookEmpty.hidden = texts.length > 0;
+  els.copyAllBtn.disabled = texts.length === 0;
+  if (texts.length === 0) {
+    els.notebookStats.textContent = "";
+    return;
+  }
+  const words = texts.reduce((sum, t) => sum + (t.value.match(/\S+/g)?.length ?? 0), 0);
+  const seconds = Math.round((words / SPEAKING_WORDS_PER_MINUTE) * 60);
+  const spoken = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  els.notebookStats.textContent = `${plural(texts.length, "snippet")} · ${plural(words, "word")} · about ${spoken} spoken`;
+}
+
+const GRIP_SVG =
+  '<svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true" fill="currentColor">' +
+  '<circle cx="2" cy="2" r="1.5"/><circle cx="8" cy="2" r="1.5"/><circle cx="2" cy="8" r="1.5"/>' +
+  '<circle cx="8" cy="8" r="1.5"/><circle cx="2" cy="14" r="1.5"/><circle cx="8" cy="14" r="1.5"/></svg>';
 
 function renderHighlightItem(h) {
   const item = document.createElement("div");
@@ -875,7 +897,18 @@ function renderHighlightItem(h) {
   removeBtn.textContent = "✕";
   meta.append(removeBtn);
 
-  item.append(textarea, meta);
+  const handle = document.createElement("button");
+  handle.type = "button";
+  handle.className = "drag-handle";
+  handle.title = "Drag to reorder (or focus and press ↑/↓)";
+  handle.setAttribute("aria-label", "Reorder snippet");
+  handle.innerHTML = GRIP_SVG;
+
+  const body = document.createElement("div");
+  body.className = "highlight-body";
+  body.append(textarea, meta);
+
+  item.append(handle, body);
   item.highlight = h;
   els.notebookList.appendChild(item);
   requestAnimationFrame(() => autoGrow(textarea));
@@ -883,6 +916,7 @@ function renderHighlightItem(h) {
   let saveTimer;
   textarea.addEventListener("input", () => {
     autoGrow(textarea);
+    updateNotebookChrome();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
       const text = textarea.value.trim();
@@ -903,9 +937,7 @@ function renderHighlightItem(h) {
       return;
     }
     item.remove();
-    const remaining = els.notebookList.children.length;
-    els.notebookEmpty.hidden = remaining > 0;
-    els.copyAllBtn.disabled = remaining === 0;
+    updateNotebookChrome();
   });
 }
 
@@ -916,13 +948,130 @@ els.notebookAddForm.addEventListener("submit", async (e) => {
   try {
     const created = await api("/api/highlights", { method: "POST", body: JSON.stringify({ text }) });
     els.notebookAddInput.value = "";
-    els.notebookEmpty.hidden = true;
-    els.copyAllBtn.disabled = false;
     renderHighlightItem(created);
+    updateNotebookChrome();
   } catch (err) {
     toast(err.message, "error");
   }
 });
+
+// --- My List reordering: drag the grip (mouse or touch), or focus it and press ↑/↓ ---
+
+function notebookOrder() {
+  return [...els.notebookList.children].map((item) => Number(item.dataset.id));
+}
+
+let orderSaveTimer = null;
+
+function saveNotebookOrder(delayMs = 0) {
+  clearTimeout(orderSaveTimer);
+  orderSaveTimer = setTimeout(async () => {
+    const ids = notebookOrder();
+    if (ids.length === 0) return;
+    try {
+      await api("/api/highlights/order", { method: "PUT", body: JSON.stringify({ ids }) });
+    } catch (err) {
+      toast(`Couldn't save the new order: ${err.message}`, "error");
+      loadHighlights();
+    }
+  }, delayMs);
+}
+
+function initNotebookReorder() {
+  let drag = null; // { item, pointerId, y, grabOffset, startOrder, raf }
+
+  // Moves the dragged card to sit before the first other card whose midpoint is below the pointer.
+  function placeAt(y) {
+    const others = [...els.notebookList.children].filter((el) => el !== drag.item);
+    const before =
+      others.find((el) => {
+        const r = el.getBoundingClientRect();
+        return y < r.top + r.height / 2;
+      }) ?? null;
+    if (before !== drag.item.nextElementSibling) els.notebookList.insertBefore(drag.item, before);
+  }
+
+  // Keeps the card under the finger/cursor while the list reflows around it.
+  function followPointer(y) {
+    drag.item.style.transform = "";
+    const naturalTop = drag.item.getBoundingClientRect().top;
+    drag.item.style.transform = `translateY(${y - drag.grabOffset - naturalTop}px)`;
+  }
+
+  function autoScroll() {
+    if (!drag) return;
+    const pane = els.notebookPane.getBoundingClientRect();
+    const edge = 60;
+    let dy = 0;
+    if (drag.y < pane.top + edge) dy = -Math.ceil((pane.top + edge - drag.y) / 4);
+    else if (drag.y > pane.bottom - edge) dy = Math.ceil((drag.y - (pane.bottom - edge)) / 4);
+    if (dy) {
+      els.notebookPane.scrollTop += dy;
+      placeAt(drag.y);
+      followPointer(drag.y);
+    }
+    drag.raf = requestAnimationFrame(autoScroll);
+  }
+
+  els.notebookList.addEventListener("pointerdown", (e) => {
+    const handle = e.target.closest(".drag-handle");
+    if (!handle || e.button !== 0 || drag) return;
+    e.preventDefault();
+    const item = handle.closest(".highlight-item");
+    // Capture on the list, not the handle: re-inserting the card would drop capture held by its child.
+    els.notebookList.setPointerCapture(e.pointerId);
+    drag = {
+      item,
+      pointerId: e.pointerId,
+      y: e.clientY,
+      grabOffset: e.clientY - item.getBoundingClientRect().top,
+      startOrder: notebookOrder().join(),
+      raf: 0,
+    };
+    item.classList.add("dragging");
+    document.body.classList.add("reordering");
+    drag.raf = requestAnimationFrame(autoScroll);
+  });
+
+  els.notebookList.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    drag.y = e.clientY;
+    placeAt(drag.y);
+    followPointer(drag.y);
+  });
+
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    cancelAnimationFrame(drag.raf);
+    drag.item.classList.remove("dragging");
+    drag.item.style.transform = "";
+    document.body.classList.remove("reordering");
+    const changed = notebookOrder().join() !== drag.startOrder;
+    drag = null;
+    if (changed) saveNotebookOrder();
+  }
+
+  els.notebookList.addEventListener("pointerup", endDrag);
+  els.notebookList.addEventListener("pointercancel", endDrag);
+
+  els.notebookList.addEventListener("keydown", (e) => {
+    const handle = e.target.closest?.(".drag-handle");
+    if (!handle || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    e.preventDefault();
+    const item = handle.closest(".highlight-item");
+    if (e.key === "ArrowUp") {
+      if (!item.previousElementSibling) return;
+      els.notebookList.insertBefore(item, item.previousElementSibling);
+    } else {
+      if (!item.nextElementSibling) return;
+      els.notebookList.insertBefore(item, item.nextElementSibling.nextElementSibling);
+    }
+    // Re-inserting a node blurs it; keep focus on the grip so repeated presses keep moving it.
+    handle.focus();
+    item.scrollIntoView({ block: "nearest" });
+    saveNotebookOrder(500);
+  });
+}
 
 // Builds a script draft from My List: every snippet as currently edited, then the articles they came from.
 function notebookAsText() {
@@ -1158,6 +1307,7 @@ window.addEventListener("beforeunload", flushProgress);
 async function init() {
   renderStaticFilters();
   initSelectionCapture();
+  initNotebookReorder();
   enterMobileScreen("list", "DisciplineFeed");
   try {
     await loadFeeds();

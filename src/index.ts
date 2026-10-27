@@ -202,7 +202,7 @@ app.post("/api/articles/:id/save", async (c) => {
 });
 
 app.get("/api/highlights", async (c) => {
-  const { results } = await c.env.DB.prepare("SELECT * FROM highlights ORDER BY id ASC").all();
+  const { results } = await c.env.DB.prepare("SELECT * FROM highlights ORDER BY position ASC, id ASC").all();
   return c.json(results);
 });
 
@@ -219,14 +219,28 @@ app.post("/api/highlights", async (c) => {
   const text = body.text?.trim();
   if (!text) return c.json({ error: "Text is required" }, 400);
   const result = await c.env.DB.prepare(
-    `INSERT INTO highlights (text, article_id, article_title, article_url, feed_title)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO highlights (text, article_id, article_title, article_url, feed_title, position)
+     VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM highlights))`,
   )
     .bind(text, body.articleId ?? null, body.articleTitle ?? null, body.articleUrl ?? null, body.feedTitle ?? null)
     .run();
   const id = Number(result.meta.last_row_id);
   const created = await c.env.DB.prepare("SELECT * FROM highlights WHERE id = ?").bind(id).first();
   return c.json(created, 201);
+});
+
+// Saves a hand-arranged My List order: ids listed first-to-last.
+app.put("/api/highlights/order", async (c) => {
+  const body = await c.req.json<{ ids?: unknown }>().catch(() => ({}) as { ids?: unknown });
+  const ids = body.ids;
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => Number.isInteger(id) && id > 0)) {
+    return c.json({ error: "ids must be a non-empty list of highlight ids" }, 400);
+  }
+  if (ids.length > 1000) return c.json({ error: "Too many highlights to reorder at once" }, 400);
+  await c.env.DB.batch(
+    ids.map((id, index) => c.env.DB.prepare("UPDATE highlights SET position = ? WHERE id = ?").bind(index + 1, id)),
+  );
+  return c.json({ ok: true });
 });
 
 app.patch("/api/highlights/:id", async (c) => {

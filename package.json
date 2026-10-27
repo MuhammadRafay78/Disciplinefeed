@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate:local": "wrangler d1 execute disciplinefeed-db --local --file=./schema.sql",
-    "db:migrate:remote": "wrangler d1 execute disciplinefeed-db --remote --file=./schema.sql",
+    "db:init:local": "wrangler d1 execute disciplinefeed-db --local --file=./schema.sql",
+    "db:init:remote": "wrangler d1 execute disciplinefeed-db --remote --file=./schema.sql",
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.ts\"",
     "check:client": "node --check public/app.js"

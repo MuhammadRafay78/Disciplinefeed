@@ -36,7 +36,7 @@ Requires Node 22.
 
 ```sh
 npm install
-npm run db:migrate:local   # creates the local D1 schema from schema.sql
+npm run db:init:local      # creates a fresh local D1 schema from schema.sql
 npm run dev                # http://localhost:8787
 ```
 
@@ -56,7 +56,7 @@ npm run deploy
 
 ### Database migrations
 
-A **new** database only needs `schema.sql` (`npm run db:migrate:remote`).
+A **new** database only needs `schema.sql` (`npm run db:init:remote`). Don't run that on an existing database: it only creates what's missing from a blank slate, and fails on a database that still needs migrations.
 
 An **existing** database needs each migration it hasn't had yet, in order, run right before deploying the code that uses it:
 

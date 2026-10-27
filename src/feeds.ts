@@ -1,4 +1,5 @@
 import { decodeEntities, htmlToText, parseFeed, sanitizeHtml, type ParsedArticle } from "./parse";
+import { chunk, MAX_IDS_PER_STATEMENT, placeholders } from "./sql";
 
 const FETCH_HEADERS = {
   "User-Agent":
@@ -25,7 +26,15 @@ async function fetchFeedXml(url: string, validators?: CacheValidators): Promise<
   if (validators?.lastModified) headers["If-Modified-Since"] = validators.lastModified;
 
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
-    const res = await fetch(url, { headers });
+    let res: Response;
+    try {
+      res = await fetch(url, { headers });
+    } catch (err) {
+      // A dropped connection is as transient as a 5xx; retry it the same way.
+      if (attempt === MAX_FETCH_ATTEMPTS) throw err;
+      await sleep(500 * 2 ** (attempt - 1));
+      continue;
+    }
     if (res.status === 304) return { notModified: true };
     if (res.ok) {
       return {
@@ -96,12 +105,18 @@ async function fetchAndParseFeed(
 
 async function upsertArticles(db: D1Database, feedId: number, articles: ParsedArticle[]): Promise<number> {
   // Most refreshes re-deliver articles we already have; skip them up front rather than
-  // sanitizing every body only for the INSERT to be ignored.
-  const { results: existing } = await db
-    .prepare("SELECT guid FROM articles WHERE feed_id = ?")
-    .bind(feedId)
-    .all<{ guid: string }>();
-  const known = new Set(existing.map((r) => r.guid));
+  // sanitizing every body only for the INSERT to be ignored. Only the guids in this fetch are
+  // looked up, so the cost doesn't grow with the feed's history.
+  const guids = [...new Set(articles.filter((a) => a.url).map((a) => a.guid))];
+  if (guids.length === 0) return 0;
+  const lookups = await db.batch<{ guid: string }>(
+    chunk(guids, MAX_IDS_PER_STATEMENT - 1).map((part) =>
+      db
+        .prepare(`SELECT guid FROM articles WHERE feed_id = ? AND guid IN (${placeholders(part.length)})`)
+        .bind(feedId, ...part),
+    ),
+  );
+  const known = new Set(lookups.flatMap((r) => r.results.map((row) => row.guid)));
   const fresh = articles.filter((a) => a.url && !known.has(a.guid));
   if (fresh.length === 0) return 0;
 
@@ -215,6 +230,8 @@ const TEXT_BACKFILL_BATCH = 50;
 // Articles stored before content_text existed get it filled in a batch per scheduled run. Their
 // titles and summaries were also saved before HTML entities were decoded, so fix those in the same
 // pass; content_text being NULL is what marks a row as not yet processed, so none is decoded twice.
+// Rows the previous deploy wrote after the migrations ran (before this code went live) also lack
+// sort_at, which would keep them out of paged lists; fill that from the same formula as 0005.
 export async function backfillArticleText(db: D1Database): Promise<number> {
   const { results } = await db
     .prepare("SELECT id, title, summary, content_html FROM articles WHERE content_text IS NULL LIMIT ?")
@@ -224,7 +241,13 @@ export async function backfillArticleText(db: D1Database): Promise<number> {
   await db.batch(
     results.map((row) =>
       db
-        .prepare("UPDATE articles SET title = ?, summary = ?, content_text = ? WHERE id = ?")
+        .prepare(
+          `UPDATE articles SET title = ?, summary = ?, content_text = ?,
+             sort_at = COALESCE(sort_at, MIN(
+               COALESCE(published_at, strftime('%Y-%m-%dT%H:%M:%fZ', fetched_at)),
+               strftime('%Y-%m-%dT%H:%M:%fZ', fetched_at)))
+           WHERE id = ?`,
+        )
         .bind(
           decodeEntities(row.title),
           row.summary === null ? null : decodeEntities(row.summary),

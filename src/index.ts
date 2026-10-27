@@ -12,6 +12,7 @@ import { findSubstackPublicationsForTopic } from "./discoverSources";
 import { buildOpml, type OpmlFeed } from "./opml";
 import { decodeCursor, encodeCursor } from "./pagination";
 import { shapeExcerpt } from "./search";
+import { chunk, placeholders } from "./sql";
 import { sanitizeHtml } from "./parse";
 
 interface Bindings {
@@ -108,7 +109,8 @@ app.post("/api/feeds/:id/refresh", async (c) => {
 });
 
 app.post("/api/refresh", async (c) => {
-  const result = await refreshAllFeeds(c.env.DB);
+  // A manual refresh also advances the text backfill, so a large library catches up faster.
+  const [result] = await Promise.all([refreshAllFeeds(c.env.DB), backfillArticleText(c.env.DB)]);
   return c.json(result);
 });
 
@@ -163,7 +165,9 @@ app.get("/api/articles", async (c) => {
        ${windowStart} AS excerpt_start,
        length(a.content_text) AS text_length`
     : "";
-  const term = search?.toLowerCase();
+  // Fold only A–Z, exactly like SQLite's lower(), so the term and lower(text) agree character for
+  // character (JavaScript's toLowerCase would also fold non-ASCII letters SQLite leaves alone).
+  const term = search?.replace(/[A-Z]/g, (ch) => ch.toLowerCase());
   const selectParams = term ? [term, term, term] : [];
   const query = `
     SELECT ${ARTICLE_LIST_COLUMNS}${excerptColumns}
@@ -199,7 +203,9 @@ app.get("/api/articles", async (c) => {
     }
   }
   const last = page[page.length - 1];
-  const nextCursor = hasMore && !inProgress ? encodeCursor(last.sort_at, last.id) : null;
+  // A row without sort_at (written by the previous deploy, awaiting backfill) sorts last; treat it
+  // as the end of the list rather than encode a cursor that can't be compared.
+  const nextCursor = hasMore && !inProgress && last.sort_at ? encodeCursor(last.sort_at, last.id) : null;
   const maxId = maxResult ? ((maxResult.results[0]?.max_id as number | null) ?? 0) : undefined;
   return c.json({ articles: page, nextCursor, maxId });
 });
@@ -226,8 +232,6 @@ app.post("/api/articles/mark-all-read", async (c) => {
   return c.json({ marked: results.length, ids: results.map((r) => r.id) });
 });
 
-// D1 caps bound parameters per statement at 100, so large id lists go out as several statements.
-const MAX_IDS_PER_STATEMENT = 90;
 const MAX_IDS_PER_REQUEST = 10000;
 
 app.post("/api/articles/mark-unread", async (c) => {
@@ -237,13 +241,9 @@ app.post("/api/articles/mark-unread", async (c) => {
     return c.json({ error: "ids must be a list of article ids" }, 400);
   }
   if (ids.length > MAX_IDS_PER_REQUEST) return c.json({ error: "Too many articles at once" }, 400);
-  const statements = [];
-  for (let i = 0; i < ids.length; i += MAX_IDS_PER_STATEMENT) {
-    const chunk = ids.slice(i, i + MAX_IDS_PER_STATEMENT);
-    statements.push(
-      c.env.DB.prepare(`UPDATE articles SET is_read = 0 WHERE id IN (${chunk.map(() => "?").join(", ")})`).bind(...chunk),
-    );
-  }
+  const statements = chunk(ids).map((part) =>
+    c.env.DB.prepare(`UPDATE articles SET is_read = 0 WHERE id IN (${placeholders(part.length)})`).bind(...part),
+  );
   if (statements.length) await c.env.DB.batch(statements);
   return c.json({ ok: true });
 });
@@ -273,8 +273,11 @@ app.get("/api/articles/:id", async (c) => {
   return c.json(article);
 });
 
+// Round-trips through Date so impossible dates (which Date.parse rolls over, e.g. 02-31) fail.
 function isCalendarDay(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 // Articles opened per day over the last ~10 weeks, for the reading streak.
@@ -375,10 +378,21 @@ app.post("/api/highlights/bulk", async (c) => {
   return c.json({ added: valid.length }, 201);
 });
 
-// Clears My List. The client keeps what it showed (including unsaved edits) to offer Undo.
+// Clears the given snippets from My List. Only ids the client showed are removed, so a snippet added
+// meanwhile from another device survives; the client keeps what it showed to offer Undo.
 app.delete("/api/highlights", async (c) => {
-  const result = await c.env.DB.prepare("DELETE FROM highlights").run();
-  return c.json({ removed: result.meta.changes });
+  const body = await c.req.json<{ ids?: unknown }>().catch(() => ({}) as { ids?: unknown });
+  const ids = body.ids;
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => Number.isInteger(id) && id > 0)) {
+    return c.json({ error: "ids must be a non-empty list of highlight ids" }, 400);
+  }
+  if (ids.length > MAX_IDS_PER_REQUEST) return c.json({ error: "Too many snippets at once" }, 400);
+  await c.env.DB.batch(
+    chunk(ids).map((part) =>
+      c.env.DB.prepare(`DELETE FROM highlights WHERE id IN (${placeholders(part.length)})`).bind(...part),
+    ),
+  );
+  return c.json({ removed: ids.length });
 });
 
 // Saves a hand-arranged My List order: ids listed first-to-last.

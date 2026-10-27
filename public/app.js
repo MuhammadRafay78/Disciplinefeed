@@ -732,9 +732,15 @@ async function markAllRead() {
   await reflectReadState(result.ids, true);
 }
 
+// The server takes up to 10,000 ids per request; a huge "mark all read" is undone in slices.
+const UNDO_IDS_PER_REQUEST = 5000;
+
 async function restoreUnread(ids) {
   try {
-    await api("/api/articles/mark-unread", { method: "POST", body: JSON.stringify({ ids }) });
+    for (let i = 0; i < ids.length; i += UNDO_IDS_PER_REQUEST) {
+      const slice = ids.slice(i, i + UNDO_IDS_PER_REQUEST);
+      await api("/api/articles/mark-unread", { method: "POST", body: JSON.stringify({ ids: slice }) });
+    }
   } catch (err) {
     toast(err.message, "error");
     return;
@@ -877,13 +883,15 @@ async function selectArticle(id) {
     if (token === selectRequestToken) toast(err.message, "error");
     return;
   }
-  // The user already moved on to another article while this one was loading.
-  if (token !== selectRequestToken) return;
-
-  // Fetching the article marks it read server-side; is_read here is its state from before that.
+  // Fetching the article marked it read (and logged it for the streak) server-side, even if the user
+  // has already moved on, so keep the counts in step before deciding whether to render it.
+  // is_read here is its state from before that fetch.
   if (!article.is_read) adjustUnread(article.feed_id, -1);
   if (article.first_read_today) countReadToday();
   setListItemRead(id, true);
+
+  // The user already moved on to another article while this one was loading.
+  if (token !== selectRequestToken) return;
   currentArticle = { ...article, is_read: 1 };
 
   els.readerEmpty.hidden = true;
@@ -1438,6 +1446,8 @@ function downloadNotebook() {
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
+const RESTORE_SNIPPETS_PER_REQUEST = 500;
+
 async function clearNotebook() {
   const items = [...els.notebookList.querySelectorAll(".highlight-item")];
   if (items.length === 0 || !confirm(`Clear all ${plural(items.length, "snippet")} from My List?`)) return;
@@ -1450,7 +1460,10 @@ async function clearNotebook() {
     feedTitle: item.highlight.feed_title,
   }));
   try {
-    await api("/api/highlights", { method: "DELETE" });
+    await api("/api/highlights", {
+      method: "DELETE",
+      body: JSON.stringify({ ids: items.map((item) => Number(item.dataset.id)) }),
+    });
   } catch (err) {
     toast(err.message, "error");
     return;
@@ -1461,7 +1474,11 @@ async function clearNotebook() {
     label: "Undo",
     run: async () => {
       try {
-        await api("/api/highlights/bulk", { method: "POST", body: JSON.stringify({ items: snapshot }) });
+        // In order, in slices under the server's per-request cap; positions keep counting up.
+        for (let i = 0; i < snapshot.length; i += RESTORE_SNIPPETS_PER_REQUEST) {
+          const items = snapshot.slice(i, i + RESTORE_SNIPPETS_PER_REQUEST);
+          await api("/api/highlights/bulk", { method: "POST", body: JSON.stringify({ items }) });
+        }
       } catch (err) {
         toast(err.message, "error");
         return;

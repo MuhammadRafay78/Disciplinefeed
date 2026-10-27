@@ -293,19 +293,46 @@ interface HighlightBody {
   feedTitle?: string;
 }
 
+// New snippets go to the end of My List.
+const INSERT_HIGHLIGHT_SQL = `INSERT INTO highlights (text, article_id, article_title, article_url, feed_title, position)
+  VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM highlights))`;
+
+function insertHighlight(db: D1Database, text: string, body: HighlightBody) {
+  return db
+    .prepare(INSERT_HIGHLIGHT_SQL)
+    .bind(text, body.articleId ?? null, body.articleTitle ?? null, body.articleUrl ?? null, body.feedTitle ?? null);
+}
+
 app.post("/api/highlights", async (c) => {
   const body = await c.req.json<HighlightBody>().catch(() => ({}) as HighlightBody);
   const text = body.text?.trim();
   if (!text) return c.json({ error: "Text is required" }, 400);
-  const result = await c.env.DB.prepare(
-    `INSERT INTO highlights (text, article_id, article_title, article_url, feed_title, position)
-     VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM highlights))`,
-  )
-    .bind(text, body.articleId ?? null, body.articleTitle ?? null, body.articleUrl ?? null, body.feedTitle ?? null)
-    .run();
+  const result = await insertHighlight(c.env.DB, text, body).run();
   const id = Number(result.meta.last_row_id);
   const created = await c.env.DB.prepare("SELECT * FROM highlights WHERE id = ?").bind(id).first();
   return c.json(created, 201);
+});
+
+// Re-adds several snippets in the given order (used to undo "Clear").
+app.post("/api/highlights/bulk", async (c) => {
+  const body = await c.req.json<{ items?: unknown }>().catch(() => ({}) as { items?: unknown });
+  const items = body.items;
+  if (!Array.isArray(items) || items.length === 0 || items.length > 1000) {
+    return c.json({ error: "items must be a list of 1–1000 snippets" }, 400);
+  }
+  const valid = items.filter(
+    (item): item is HighlightBody & { text: string } =>
+      typeof item === "object" && item !== null && typeof item.text === "string" && item.text.trim() !== "",
+  );
+  if (valid.length !== items.length) return c.json({ error: "Every snippet needs text" }, 400);
+  await c.env.DB.batch(valid.map((item) => insertHighlight(c.env.DB, item.text.trim(), item)));
+  return c.json({ added: valid.length }, 201);
+});
+
+// Clears My List. The client keeps what it showed (including unsaved edits) to offer Undo.
+app.delete("/api/highlights", async (c) => {
+  const result = await c.env.DB.prepare("DELETE FROM highlights").run();
+  return c.json({ removed: result.meta.changes });
 });
 
 // Saves a hand-arranged My List order: ids listed first-to-last.

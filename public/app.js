@@ -80,6 +80,8 @@ const els = {
   notebookList: document.getElementById("notebookList"),
   notebookEmpty: document.getElementById("notebookEmpty"),
   copyAllBtn: document.getElementById("copyAllBtn"),
+  downloadMdBtn: document.getElementById("downloadMdBtn"),
+  clearListBtn: document.getElementById("clearListBtn"),
   prompterOpenBtn: document.getElementById("prompterOpenBtn"),
   prompter: document.getElementById("prompter"),
   prompterScroll: document.getElementById("prompterScroll"),
@@ -1108,8 +1110,9 @@ const SPEAKING_WORDS_PER_MINUTE = 150;
 function updateNotebookChrome() {
   const texts = [...els.notebookList.querySelectorAll(".highlight-text")];
   els.notebookEmpty.hidden = texts.length > 0;
-  els.copyAllBtn.disabled = texts.length === 0;
-  els.prompterOpenBtn.disabled = texts.length === 0;
+  for (const btn of [els.copyAllBtn, els.downloadMdBtn, els.clearListBtn, els.prompterOpenBtn]) {
+    btn.disabled = texts.length === 0;
+  }
   if (texts.length === 0) {
     els.notebookStats.textContent = "";
     return;
@@ -1372,22 +1375,96 @@ function initNotebookReorder() {
   });
 }
 
-// Builds a script draft from My List: every snippet as currently edited, then the articles they came from.
-function notebookAsText() {
+// My List as currently shown: snippet text as edited, in display order, plus the articles they came from.
+function collectNotebook() {
   const items = [...els.notebookList.querySelectorAll(".highlight-item")];
   const snippets = items.map((item) => item.querySelector(".highlight-text").value.trim()).filter(Boolean);
   const sources = new Map();
   for (const item of items) {
     const h = item.highlight;
-    if (h?.article_title && !sources.has(h.article_url || h.article_title)) {
-      const from = h.feed_title ? ` — ${h.feed_title}` : "";
-      sources.set(h.article_url || h.article_title, `- ${h.article_title}${from}${h.article_url ? ` (${h.article_url})` : ""}`);
+    if (!h?.article_title) continue;
+    // One entry per article, preferring a snippet that recorded the link.
+    const key = h.article_id ?? h.article_url ?? h.article_title;
+    if (!sources.has(key) || (!sources.get(key).url && h.article_url)) {
+      sources.set(key, { title: h.article_title, url: h.article_url, feed: h.feed_title });
     }
   }
+  return { snippets, sources: [...sources.values()] };
+}
+
+// Plain-text script draft for pasting anywhere.
+function notebookAsText() {
+  const { snippets, sources } = collectNotebook();
   let text = snippets.join("\n\n");
-  if (sources.size) text += `\n\n---\nSources:\n${[...sources.values()].join("\n")}`;
+  if (sources.length) {
+    const lines = sources.map((s) => `- ${s.title}${s.feed ? ` — ${s.feed}` : ""}${s.url ? ` (${s.url})` : ""}`);
+    text += `\n\n---\nSources:\n${lines.join("\n")}`;
+  }
   return { text, count: snippets.length };
 }
+
+function notebookAsMarkdown() {
+  const { snippets, sources } = collectNotebook();
+  const date = new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  let md = `# Script — ${date}\n\n${snippets.join("\n\n")}\n`;
+  if (sources.length) {
+    const escapeMd = (text) => text.replace(/([\[\]])/g, "\\$1");
+    const lines = sources.map((s) => {
+      const title = s.url && isSafeHttpUrl(s.url) ? `[${escapeMd(s.title)}](${s.url})` : escapeMd(s.title);
+      return `- ${title}${s.feed ? ` — ${s.feed}` : ""}`;
+    });
+    md += `\n---\n\n## Sources\n\n${lines.join("\n")}\n`;
+  }
+  return md;
+}
+
+function downloadNotebook() {
+  const blob = new Blob([notebookAsMarkdown()], { type: "text/markdown;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `script-${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+async function clearNotebook() {
+  const items = [...els.notebookList.querySelectorAll(".highlight-item")];
+  if (items.length === 0 || !confirm(`Clear all ${plural(items.length, "snippet")} from My List?`)) return;
+  // Snapshot what's shown (unsaved edits and order included) so Undo restores exactly this.
+  const snapshot = items.map((item) => ({
+    text: item.querySelector(".highlight-text").value.trim() || item.highlight.text,
+    articleId: item.highlight.article_id,
+    articleTitle: item.highlight.article_title,
+    articleUrl: item.highlight.article_url,
+    feedTitle: item.highlight.feed_title,
+  }));
+  try {
+    await api("/api/highlights", { method: "DELETE" });
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  els.notebookList.innerHTML = "";
+  updateNotebookChrome();
+  toast(`Cleared ${plural(snapshot.length, "snippet")}`, "info", UNDO_TOAST_MS, {
+    label: "Undo",
+    run: async () => {
+      try {
+        await api("/api/highlights/bulk", { method: "POST", body: JSON.stringify({ items: snapshot }) });
+      } catch (err) {
+        toast(err.message, "error");
+        return;
+      }
+      if (state.view === "notebook") loadHighlights();
+      toast(`Restored ${plural(snapshot.length, "snippet")}`);
+    },
+  });
+}
+
+els.downloadMdBtn.addEventListener("click", downloadNotebook);
+els.clearListBtn.addEventListener("click", clearNotebook);
 
 async function copyToClipboard(text) {
   try {

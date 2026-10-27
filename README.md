@@ -8,7 +8,7 @@ A personal RSS reader for discipline, focus and self-improvement writing, plus a
 - Move subscriptions in or out with **Import / Export** (OPML, the format every RSS reader understands), next to the Subscriptions heading.
 - Reader with reading progress, a **Continue Reading** list, saved articles, unread counts, search and mark-all-read.
 - **Discover**: track topic keywords to surface the best-matching articles across your subscriptions, and find new Substacks for a topic.
-- **My List**: select text while reading and tap **+ Add to my list**, or jot your own notes. Drag snippets into order, check the word count and estimated speaking time, then **Copy all** to get a script draft with a sources list.
+- **My List**: select text while reading and tap **+ Add to my list**, or jot your own notes. Drag snippets into order, check the word count and estimated speaking time, then **Copy all** (or download as Markdown) to get a script draft with a sources list. **Clear** starts a fresh script, with Undo.
 - **Teleprompter**: read your My List script on camera. It scrolls at a words-per-minute pace you set, with a 3-2-1 countdown, tap or Space to pause, mirror mode for teleprompter glass, and keeps the phone screen awake while running.
 
 ### Keyboard shortcuts

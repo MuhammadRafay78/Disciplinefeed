@@ -90,6 +90,8 @@ const els = {
   shortcutsHintBtn: document.getElementById("shortcutsHintBtn"),
   shortcutsCloseBtn: document.getElementById("shortcutsCloseBtn"),
   readerPrefsBtn: document.getElementById("readerPrefsBtn"),
+  importOpmlBtn: document.getElementById("importOpmlBtn"),
+  opmlFileInput: document.getElementById("opmlFileInput"),
   readerPrefs: document.getElementById("readerPrefs"),
   textSmallerBtn: document.getElementById("textSmallerBtn"),
   textLargerBtn: document.getElementById("textLargerBtn"),
@@ -114,7 +116,11 @@ async function api(path, options) {
     ...options,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -150,14 +156,17 @@ function plural(n, word) {
 
 let toastTimer = null;
 
-function toast(message, kind = "info") {
+// durationMs of 0 keeps the toast up until the next one replaces it (for progress messages).
+function toast(message, kind = "info", durationMs = kind === "error" ? 5000 : 2600) {
   els.toast.textContent = message;
   els.toast.classList.toggle("error", kind === "error");
   els.toast.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    els.toast.hidden = true;
-  }, kind === "error" ? 5000 : 2600);
+  if (durationMs > 0) {
+    toastTimer = setTimeout(() => {
+      els.toast.hidden = true;
+    }, durationMs);
+  }
 }
 
 // --- Sidebar (built-in filters + feeds) ---
@@ -365,6 +374,87 @@ els.addFeedForm.addEventListener("submit", async (e) => {
     submitBtn.disabled = false;
     submitBtn.textContent = "Add";
   }
+});
+
+// --- OPML import (export is a plain download of /api/opml) ---
+
+function normalizeFeedUrl(url) {
+  return url.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
+}
+
+function feedsFromOpml(text) {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length) throw new Error("That file isn't a valid OPML file");
+  const feeds = [];
+  for (const outline of doc.getElementsByTagName("outline")) {
+    // Readers disagree on the attribute's case (xmlUrl vs xmlurl), and XML attribute lookup is case-sensitive.
+    const url = [...outline.attributes].find((a) => a.name.toLowerCase() === "xmlurl")?.value.trim();
+    if (!url || !/^https?:\/\//i.test(url)) continue;
+    feeds.push({ url, title: outline.getAttribute("title") || outline.getAttribute("text") || url });
+  }
+  return feeds;
+}
+
+const OPML_IMPORT_CONCURRENCY = 2;
+
+async function importOpml(file) {
+  let entries;
+  try {
+    entries = feedsFromOpml(await file.text());
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  const seen = new Set(state.feeds.map((f) => normalizeFeedUrl(f.url)));
+  const todo = entries.filter((entry) => {
+    const key = normalizeFeedUrl(entry.url);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (todo.length === 0) {
+    toast(entries.length ? "You already follow every feed in that file" : "No feeds found in that file");
+    return;
+  }
+
+  els.importOpmlBtn.disabled = true;
+  els.addFeedError.hidden = true;
+  let finished = 0;
+  let added = 0;
+  const failures = [];
+  toast(`Importing ${plural(todo.length, "feed")}…`, "info", 0);
+  let next = 0;
+  async function worker() {
+    while (next < todo.length) {
+      const entry = todo[next++];
+      try {
+        await api("/api/feeds", { method: "POST", body: JSON.stringify({ url: entry.url }) });
+        added++;
+      } catch (err) {
+        // 409: same feed under a different URL spelling (e.g. after a redirect) — already followed.
+        if (err.status !== 409) failures.push(`${entry.title} (${err.message})`);
+      }
+      finished++;
+      toast(`Importing feeds… ${finished} of ${todo.length}`, "info", 0);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(OPML_IMPORT_CONCURRENCY, todo.length) }, worker));
+  els.importOpmlBtn.disabled = false;
+
+  toast(failures.length ? `Imported ${plural(added, "feed")} · ${failures.length} failed` : `Imported ${plural(added, "feed")}`);
+  if (failures.length) {
+    els.addFeedError.textContent = `Couldn't import: ${failures.join("; ")}`;
+    els.addFeedError.hidden = false;
+  }
+  await loadFeeds();
+  if (state.view !== "notebook") loadArticles(true);
+}
+
+els.importOpmlBtn.addEventListener("click", () => els.opmlFileInput.click());
+els.opmlFileInput.addEventListener("change", () => {
+  const file = els.opmlFileInput.files?.[0];
+  els.opmlFileInput.value = "";
+  if (file) importOpml(file);
 });
 
 // --- Article list ---

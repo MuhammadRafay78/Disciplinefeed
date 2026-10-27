@@ -82,7 +82,15 @@
         <nav id="continueReadingList" class="feed-list"></nav>
       </div>
 
-      <div class="feed-list-divider">Subscriptions</div>
+      <div class="feed-list-divider divider-with-actions">
+        <span>Subscriptions</span>
+        <span class="divider-actions">
+          <button id="importOpmlBtn" class="link-btn" title="Import subscriptions from another reader (OPML file)">Import</button>
+          <span aria-hidden="true">·</span>
+          <a class="link-btn" href="/api/opml" download title="Download your subscriptions as an OPML file">Export</a>
+        </span>
+      </div>
+      <input id="opmlFileInput" type="file" accept=".opml,.xml,text/xml,application/xml,text/x-opml" hidden />
       <nav id="feedList" class="feed-list"></nav>
 
       <button id="shortcutsHintBtn" class="shortcuts-hint">Keyboard shortcuts <kbd>?</kbd></button>

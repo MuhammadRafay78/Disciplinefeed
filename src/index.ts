@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { addFeed, FEED_REFRESH_COLUMNS, refreshAllFeeds, refreshFeed, type FeedToRefresh } from "./feeds";
 import { likePattern, scoreArticle } from "./discover";
 import { findSubstackPublicationsForTopic } from "./discoverSources";
+import { buildOpml, type OpmlFeed } from "./opml";
 import { decodeCursor, encodeCursor } from "./pagination";
 import { sanitizeHtml } from "./parse";
 
@@ -40,6 +41,16 @@ app.post("/api/feeds", async (c) => {
     }
     return c.json({ error: message }, 422);
   }
+});
+
+app.get("/api/opml", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    "SELECT title, url, site_url FROM feeds ORDER BY title COLLATE NOCASE",
+  ).all<OpmlFeed>();
+  return c.body(buildOpml(results), 200, {
+    "Content-Type": "text/x-opml; charset=utf-8",
+    "Content-Disposition": 'attachment; filename="disciplinefeed-subscriptions.opml"',
+  });
 });
 
 app.delete("/api/feeds/:id", async (c) => {

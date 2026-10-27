@@ -13,6 +13,14 @@ import { buildOpml, type OpmlFeed } from "./opml";
 import { decodeCursor, encodeCursor } from "./pagination";
 import { shapeExcerpt } from "./search";
 import { chunk, placeholders } from "./sql";
+import {
+  cleanScriptTitle,
+  currentScriptId,
+  insertHighlight,
+  NOW_ISO_SQL,
+  resolveScriptId,
+  type HighlightFields,
+} from "./scripts";
 import { sanitizeHtml } from "./parse";
 
 interface Bindings {
@@ -29,6 +37,8 @@ const REQUIRED_SCHEMA: Array<{ migration: string; table: string; column?: string
   { migration: "0006_highlight_position.sql", table: "highlights", column: "position" },
   { migration: "0007_article_text.sql", table: "articles", column: "content_text" },
   { migration: "0008_reading_log.sql", table: "reading_log" },
+  { migration: "0009_scripts.sql", table: "scripts" },
+  { migration: "0009_scripts.sql", table: "highlights", column: "script_id" },
 ];
 
 app.get("/api/health", async (c) => {
@@ -325,46 +335,134 @@ app.post("/api/articles/:id/save", async (c) => {
   return c.json({ is_saved: !!nextVal });
 });
 
+// --- Saved scripts ---
+
+app.get("/api/scripts", async (c) => {
+  const db = c.env.DB;
+  const currentId = await currentScriptId(db);
+  // Snippets written by the previous deploy (before scripts existed) have no script; adopt them.
+  const [, listed] = await db.batch<Record<string, unknown>>([
+    db.prepare("UPDATE highlights SET script_id = ? WHERE script_id IS NULL").bind(currentId),
+    db.prepare(
+      `SELECT s.id, s.title, s.created_at,
+         (SELECT COUNT(*) FROM highlights h WHERE h.script_id = s.id) AS snippet_count
+       FROM scripts s
+       ORDER BY s.created_at DESC, s.id DESC`,
+    ),
+  ]);
+  return c.json({ scripts: listed.results, currentId });
+});
+
+// Creates a script and makes it the current one.
+app.post("/api/scripts", async (c) => {
+  const body = await c.req.json<{ title?: unknown }>().catch(() => ({}) as { title?: unknown });
+  const title = cleanScriptTitle(body.title) ?? "Untitled script";
+  const created = await c.env.DB.prepare("INSERT INTO scripts (title) VALUES (?) RETURNING id, title, created_at")
+    .bind(title)
+    .first();
+  return c.json({ ...created, snippet_count: 0 }, 201);
+});
+
+app.patch("/api/scripts/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json<{ title?: unknown }>().catch(() => ({}) as { title?: unknown });
+  const title = cleanScriptTitle(body.title);
+  if (!title) return c.json({ error: "A script needs a name" }, 400);
+  const result = await c.env.DB.prepare("UPDATE scripts SET title = ? WHERE id = ?").bind(title, id).run();
+  if (result.meta.changes === 0) return c.json({ error: "Script not found" }, 404);
+  return c.json({ id, title });
+});
+
+app.post("/api/scripts/:id/select", async (c) => {
+  const id = Number(c.req.param("id"));
+  const result = await c.env.DB.prepare(`UPDATE scripts SET selected_at = ${NOW_ISO_SQL} WHERE id = ?`).bind(id).run();
+  if (result.meta.changes === 0) return c.json({ error: "Script not found" }, 404);
+  return c.json({ currentId: id });
+});
+
+// Copies a script and its snippets (e.g. to cut a shorter version) and makes the copy current.
+app.post("/api/scripts/:id/duplicate", async (c) => {
+  const db = c.env.DB;
+  const id = Number(c.req.param("id"));
+  const source = await db.prepare("SELECT title FROM scripts WHERE id = ?").bind(id).first<{ title: string }>();
+  if (!source) return c.json({ error: "Script not found" }, 404);
+  const copy = await db
+    .prepare("INSERT INTO scripts (title) VALUES (?) RETURNING id, title, created_at")
+    .bind(cleanScriptTitle(`${source.title} (copy)`))
+    .first<{ id: number }>();
+  const result = await db
+    .prepare(
+      `INSERT INTO highlights (text, article_id, article_title, article_url, feed_title, script_id, position)
+       SELECT text, article_id, article_title, article_url, feed_title, ?, position
+       FROM highlights WHERE script_id = ?`,
+    )
+    .bind(copy!.id, id)
+    .run();
+  return c.json({ ...copy, snippet_count: result.meta.changes }, 201);
+});
+
+// Deletes a script with its snippets. The client keeps what it showed to offer Undo.
+app.delete("/api/scripts/:id", async (c) => {
+  const db = c.env.DB;
+  const id = Number(c.req.param("id"));
+  const [, deleted] = await db.batch([
+    db.prepare("DELETE FROM highlights WHERE script_id = ?").bind(id),
+    db.prepare("DELETE FROM scripts WHERE id = ?").bind(id),
+  ]);
+  if (deleted.meta.changes === 0) return c.json({ error: "Script not found" }, 404);
+  return c.json({ ok: true });
+});
+
+// --- Snippets (highlights) ---
+
+// ?article_id= lists snippets saved from one article, across all scripts (for highlighting it in the
+// reader); otherwise the snippets of ?script_id=, or of the current script.
 app.get("/api/highlights", async (c) => {
+  const db = c.env.DB;
   const articleId = c.req.query("article_id");
-  const stmt = articleId
-    ? c.env.DB.prepare("SELECT * FROM highlights WHERE article_id = ? ORDER BY position ASC, id ASC").bind(Number(articleId))
-    : c.env.DB.prepare("SELECT * FROM highlights ORDER BY position ASC, id ASC");
-  const { results } = await stmt.all();
+  if (articleId) {
+    const { results } = await db
+      .prepare("SELECT * FROM highlights WHERE article_id = ? ORDER BY position ASC, id ASC")
+      .bind(Number(articleId))
+      .all();
+    return c.json(results);
+  }
+  const requested = Number(c.req.query("script_id"));
+  const scriptId = await resolveScriptId(db, Number.isInteger(requested) && requested > 0 ? requested : undefined);
+  const { results } = await db
+    .prepare("SELECT * FROM highlights WHERE script_id = ? ORDER BY position ASC, id ASC")
+    .bind(scriptId)
+    .all();
   return c.json(results);
 });
 
-interface HighlightBody {
+interface HighlightBody extends HighlightFields {
   text?: string;
-  articleId?: number;
-  articleTitle?: string;
-  articleUrl?: string;
-  feedTitle?: string;
-}
-
-// New snippets go to the end of My List.
-const INSERT_HIGHLIGHT_SQL = `INSERT INTO highlights (text, article_id, article_title, article_url, feed_title, position)
-  VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM highlights))`;
-
-function insertHighlight(db: D1Database, text: string, body: HighlightBody) {
-  return db
-    .prepare(INSERT_HIGHLIGHT_SQL)
-    .bind(text, body.articleId ?? null, body.articleTitle ?? null, body.articleUrl ?? null, body.feedTitle ?? null);
+  scriptId?: number;
 }
 
 app.post("/api/highlights", async (c) => {
+  const db = c.env.DB;
   const body = await c.req.json<HighlightBody>().catch(() => ({}) as HighlightBody);
   const text = body.text?.trim();
   if (!text) return c.json({ error: "Text is required" }, 400);
-  const result = await insertHighlight(c.env.DB, text, body).run();
-  const id = Number(result.meta.last_row_id);
-  const created = await c.env.DB.prepare("SELECT * FROM highlights WHERE id = ?").bind(id).first();
+  const scriptId = await resolveScriptId(db, body.scriptId);
+  const result = await insertHighlight(db, scriptId, text, body).run();
+  const created = await db
+    .prepare(
+      `SELECT h.*, s.title AS script_title FROM highlights h LEFT JOIN scripts s ON s.id = h.script_id
+       WHERE h.id = ?`,
+    )
+    .bind(Number(result.meta.last_row_id))
+    .first();
   return c.json(created, 201);
 });
 
-// Re-adds several snippets in the given order (used to undo "Clear").
+// Re-adds several snippets, in order, to a script (used to undo "Clear" and script deletion).
 app.post("/api/highlights/bulk", async (c) => {
-  const body = await c.req.json<{ items?: unknown }>().catch(() => ({}) as { items?: unknown });
+  const db = c.env.DB;
+  type BulkBody = { items?: unknown; scriptId?: unknown };
+  const body = await c.req.json<BulkBody>().catch(() => ({}) as BulkBody);
   const items = body.items;
   if (!Array.isArray(items) || items.length === 0 || items.length > 1000) {
     return c.json({ error: "items must be a list of 1–1000 snippets" }, 400);
@@ -374,12 +472,13 @@ app.post("/api/highlights/bulk", async (c) => {
       typeof item === "object" && item !== null && typeof item.text === "string" && item.text.trim() !== "",
   );
   if (valid.length !== items.length) return c.json({ error: "Every snippet needs text" }, 400);
-  await c.env.DB.batch(valid.map((item) => insertHighlight(c.env.DB, item.text.trim(), item)));
-  return c.json({ added: valid.length }, 201);
+  const scriptId = await resolveScriptId(db, body.scriptId);
+  await db.batch(valid.map((item) => insertHighlight(db, scriptId, item.text.trim(), item)));
+  return c.json({ added: valid.length, scriptId }, 201);
 });
 
-// Clears the given snippets from My List. Only ids the client showed are removed, so a snippet added
-// meanwhile from another device survives; the client keeps what it showed to offer Undo.
+// Clears the given snippets. Only ids the client showed are removed, so a snippet added meanwhile
+// from another device survives; the client keeps what it showed to offer Undo.
 app.delete("/api/highlights", async (c) => {
   const body = await c.req.json<{ ids?: unknown }>().catch(() => ({}) as { ids?: unknown });
   const ids = body.ids;
@@ -395,7 +494,7 @@ app.delete("/api/highlights", async (c) => {
   return c.json({ removed: ids.length });
 });
 
-// Saves a hand-arranged My List order: ids listed first-to-last.
+// Saves a hand-arranged script order: ids listed first-to-last.
 app.put("/api/highlights/order", async (c) => {
   const body = await c.req.json<{ ids?: unknown }>().catch(() => ({}) as { ids?: unknown });
   const ids = body.ids;
@@ -409,12 +508,31 @@ app.put("/api/highlights/order", async (c) => {
   return c.json({ ok: true });
 });
 
+// Edits a snippet's text, or moves it to the end of another script.
 app.patch("/api/highlights/:id", async (c) => {
+  const db = c.env.DB;
   const id = Number(c.req.param("id"));
-  const body = await c.req.json<{ text?: string }>().catch(() => ({}) as { text?: string });
+  type PatchBody = { text?: string; scriptId?: unknown };
+  const body = await c.req.json<PatchBody>().catch(() => ({}) as PatchBody);
+  if (body.scriptId !== undefined) {
+    const target = await db
+      .prepare("SELECT id, title FROM scripts WHERE id = ?")
+      .bind(Number(body.scriptId))
+      .first<{ id: number; title: string }>();
+    if (!target) return c.json({ error: "Script not found" }, 404);
+    await db
+      .prepare(
+        `UPDATE highlights SET script_id = ?,
+           position = (SELECT COALESCE(MAX(position), 0) + 1 FROM highlights WHERE script_id = ?)
+         WHERE id = ?`,
+      )
+      .bind(target.id, target.id, id)
+      .run();
+    return c.json({ ok: true, scriptId: target.id, scriptTitle: target.title });
+  }
   const text = body.text?.trim();
   if (!text) return c.json({ error: "Text is required" }, 400);
-  await c.env.DB.prepare("UPDATE highlights SET text = ? WHERE id = ?").bind(text, id).run();
+  await db.prepare("UPDATE highlights SET text = ? WHERE id = ?").bind(text, id).run();
   return c.json({ ok: true });
 });
 

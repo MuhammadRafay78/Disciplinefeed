@@ -101,6 +101,10 @@ const els = {
   prompterRestartBtn: document.getElementById("prompterRestartBtn"),
   prompterCloseBtn: document.getElementById("prompterCloseBtn"),
   notebookStats: document.getElementById("notebookStats"),
+  scriptSelect: document.getElementById("scriptSelect"),
+  newScriptBtn: document.getElementById("newScriptBtn"),
+  scriptMenuBtn: document.getElementById("scriptMenuBtn"),
+  scriptMenu: document.getElementById("scriptMenu"),
   mobileMenuBtn: document.getElementById("mobileMenuBtn"),
   mobileBackBtn: document.getElementById("mobileBackBtn"),
   mobileBackdrop: document.getElementById("mobileBackdrop"),
@@ -1114,11 +1118,152 @@ function autoGrow(textarea) {
   textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
+// --- Saved scripts: each is an ordered list of snippets; new snippets go to the current one ---
+
+const scripts = { list: [], currentId: null };
+let notebookRequestToken = 0;
+
+function currentScript() {
+  return scripts.list.find((s) => s.id === scripts.currentId) ?? null;
+}
+
+async function loadScripts() {
+  const data = await api("/api/scripts");
+  scripts.list = data.scripts;
+  scripts.currentId = data.currentId;
+  renderScriptPicker();
+}
+
+function renderScriptPicker() {
+  els.scriptSelect.innerHTML = "";
+  for (const script of scripts.list) {
+    const option = new Option(`${script.title} (${script.snippet_count})`, script.id);
+    option.selected = script.id === scripts.currentId;
+    els.scriptSelect.append(option);
+  }
+}
+
+function adjustScriptCount(scriptId, delta) {
+  const script = scripts.list.find((s) => s.id === scriptId);
+  if (!script) return;
+  script.snippet_count = Math.max(0, script.snippet_count + delta);
+  renderScriptPicker();
+}
+
 async function loadHighlights() {
-  const highlights = await api("/api/highlights");
+  const token = ++notebookRequestToken;
+  await loadScripts();
+  const highlights = await api(`/api/highlights?script_id=${scripts.currentId}`);
+  // A quicker script switch already replaced this one.
+  if (token !== notebookRequestToken) return;
   els.notebookList.innerHTML = "";
   for (const h of highlights) renderHighlightItem(h);
   updateNotebookChrome();
+}
+
+async function selectScript(id) {
+  try {
+    await api(`/api/scripts/${id}/select`, { method: "POST" });
+  } catch (err) {
+    toast(err.message, "error");
+    renderScriptPicker();
+    return;
+  }
+  await loadHighlights();
+}
+
+async function newScript() {
+  const suggested = `Script — ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+  const title = prompt("Name your new script", suggested);
+  if (title === null) return;
+  try {
+    await api("/api/scripts", { method: "POST", body: JSON.stringify({ title }) });
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  await loadHighlights();
+  toast(`Started “${currentScript()?.title}”`);
+}
+
+async function renameScript() {
+  const script = currentScript();
+  if (!script) return;
+  const title = prompt("Rename script", script.title);
+  if (title === null || title.trim() === script.title) return;
+  try {
+    const renamed = await api(`/api/scripts/${script.id}`, { method: "PATCH", body: JSON.stringify({ title }) });
+    script.title = renamed.title;
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  renderScriptPicker();
+}
+
+async function duplicateScript() {
+  const script = currentScript();
+  if (!script) return;
+  // The copy is made server-side, so save any edit still waiting on its debounce first.
+  await flushNotebookEdits();
+  try {
+    await api(`/api/scripts/${script.id}/duplicate`, { method: "POST" });
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  await loadHighlights();
+  toast(`Made a copy: “${currentScript()?.title}”`);
+}
+
+async function deleteScript() {
+  const script = currentScript();
+  if (!script) return;
+  const snapshot = snapshotNotebook();
+  const what = snapshot.length ? ` and its ${plural(snapshot.length, "snippet")}` : "";
+  if (!confirm(`Delete “${script.title}”${what}?`)) return;
+  try {
+    await api(`/api/scripts/${script.id}`, { method: "DELETE" });
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  await loadHighlights();
+  toast(`Deleted “${script.title}”`, "info", UNDO_TOAST_MS, {
+    label: "Undo",
+    run: async () => {
+      try {
+        const restored = await api("/api/scripts", { method: "POST", body: JSON.stringify({ title: script.title }) });
+        await restoreSnippets(snapshot, restored.id);
+      } catch (err) {
+        toast(err.message, "error");
+        return;
+      }
+      if (state.view === "notebook") await loadHighlights();
+      toast(`Restored “${script.title}”`);
+    },
+  });
+}
+
+function setScriptMenuOpen(open) {
+  els.scriptMenu.hidden = !open;
+  els.scriptMenuBtn.setAttribute("aria-expanded", String(open));
+}
+
+function initScripts() {
+  els.scriptSelect.addEventListener("change", () => selectScript(Number(els.scriptSelect.value)));
+  els.newScriptBtn.addEventListener("click", newScript);
+  els.scriptMenuBtn.addEventListener("click", () => setScriptMenuOpen(els.scriptMenu.hidden));
+  const actions = { rename: renameScript, duplicate: duplicateScript, delete: deleteScript };
+  els.scriptMenu.addEventListener("click", (e) => {
+    const action = actions[e.target.closest("button")?.dataset.action];
+    if (!action) return;
+    setScriptMenuOpen(false);
+    action();
+  });
+  document.addEventListener("click", (e) => {
+    if (!els.scriptMenu.hidden && !e.target.closest(".script-menu-wrap")) setScriptMenuOpen(false);
+  });
 }
 
 // Roughly how fast people talk on camera; used to estimate how long the script runs.
@@ -1126,6 +1271,11 @@ const SPEAKING_WORDS_PER_MINUTE = 150;
 
 function updateNotebookChrome() {
   const texts = [...els.notebookList.querySelectorAll(".highlight-text")];
+  const script = currentScript();
+  if (script && script.snippet_count !== texts.length) {
+    script.snippet_count = texts.length;
+    renderScriptPicker();
+  }
   els.notebookEmpty.hidden = texts.length > 0;
   for (const btn of [els.copyAllBtn, els.downloadMdBtn, els.clearListBtn, els.prompterOpenBtn]) {
     btn.disabled = texts.length === 0;
@@ -1180,6 +1330,30 @@ function renderHighlightItem(h) {
     link.textContent = "↗";
     meta.append(link);
   }
+  const others = scripts.list.filter((s) => s.id !== scripts.currentId);
+  if (others.length) {
+    const move = document.createElement("select");
+    move.className = "move-snippet";
+    move.title = "Move to another script";
+    move.setAttribute("aria-label", "Move to another script");
+    move.append(new Option("Move to…", "", true, true));
+    move.options[0].disabled = true;
+    for (const script of others) move.append(new Option(script.title, script.id));
+    move.addEventListener("change", async () => {
+      const targetId = Number(move.value);
+      try {
+        const moved = await api(`/api/highlights/${h.id}`, { method: "PATCH", body: JSON.stringify({ scriptId: targetId }) });
+        item.remove();
+        updateNotebookChrome();
+        adjustScriptCount(targetId, 1);
+        toast(`Moved to “${moved.scriptTitle}”`);
+      } catch (err) {
+        move.value = "";
+        toast(err.message, "error");
+      }
+    });
+    meta.append(move);
+  }
   const removeBtn = document.createElement("button");
   removeBtn.className = "remove-highlight";
   removeBtn.title = "Remove";
@@ -1203,19 +1377,24 @@ function renderHighlightItem(h) {
   requestAnimationFrame(() => autoGrow(textarea));
 
   let saveTimer;
+  const saveText = async () => {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    const text = textarea.value.trim();
+    if (!text) return;
+    try {
+      await api(`/api/highlights/${h.id}`, { method: "PATCH", body: JSON.stringify({ text }) });
+    } catch (err) {
+      toast(`Couldn't save your edit: ${err.message}`, "error");
+    }
+  };
+  // Lets a script copy (made server-side) include an edit that's still waiting on its debounce.
+  item.flushEdit = () => (saveTimer ? saveText() : Promise.resolve());
   textarea.addEventListener("input", () => {
     autoGrow(textarea);
     updateNotebookChrome();
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      const text = textarea.value.trim();
-      if (!text) return;
-      try {
-        await api(`/api/highlights/${h.id}`, { method: "PATCH", body: JSON.stringify({ text }) });
-      } catch (err) {
-        toast(`Couldn't save your edit: ${err.message}`, "error");
-      }
-    }, 600);
+    saveTimer = setTimeout(saveText, 600);
   });
 
   removeBtn.addEventListener("click", async () => {
@@ -1247,13 +1426,14 @@ async function restoreHighlight(h, position) {
         articleTitle: h.article_title,
         articleUrl: h.article_url,
         feedTitle: h.feed_title,
+        scriptId: h.script_id,
       }),
     });
   } catch (err) {
     toast(err.message, "error");
     return;
   }
-  if (state.view !== "notebook") return;
+  if (state.view !== "notebook" || created.script_id !== scripts.currentId) return;
   const item = renderHighlightItem(created);
   els.notebookList.insertBefore(item, els.notebookList.children[position] ?? null);
   updateNotebookChrome();
@@ -1265,7 +1445,10 @@ els.notebookAddForm.addEventListener("submit", async (e) => {
   const text = els.notebookAddInput.value.trim();
   if (!text) return;
   try {
-    const created = await api("/api/highlights", { method: "POST", body: JSON.stringify({ text }) });
+    const created = await api("/api/highlights", {
+      method: "POST",
+      body: JSON.stringify({ text, scriptId: scripts.currentId }),
+    });
     els.notebookAddInput.value = "";
     renderHighlightItem(created);
     updateNotebookChrome();
@@ -1423,7 +1606,8 @@ function notebookAsText() {
 function notebookAsMarkdown() {
   const { snippets, sources } = collectNotebook();
   const date = new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
-  let md = `# Script — ${date}\n\n${snippets.join("\n\n")}\n`;
+  const title = currentScript()?.title ?? "Script";
+  let md = `# ${title}\n\n_${date}_\n\n${snippets.join("\n\n")}\n`;
   if (sources.length) {
     const escapeMd = (text) => text.replace(/([\[\]])/g, "\\$1");
     const lines = sources.map((s) => {
@@ -1439,7 +1623,11 @@ function downloadNotebook() {
   const blob = new Blob([notebookAsMarkdown()], { type: "text/markdown;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `script-${new Date().toISOString().slice(0, 10)}.md`;
+  const slug = (currentScript()?.title ?? "script")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  link.download = `${slug || "script"}-${new Date().toISOString().slice(0, 10)}.md`;
   document.body.append(link);
   link.click();
   link.remove();
@@ -1448,17 +1636,35 @@ function downloadNotebook() {
 
 const RESTORE_SNIPPETS_PER_REQUEST = 500;
 
-async function clearNotebook() {
-  const items = [...els.notebookList.querySelectorAll(".highlight-item")];
-  if (items.length === 0 || !confirm(`Clear all ${plural(items.length, "snippet")} from My List?`)) return;
-  // Snapshot what's shown (unsaved edits and order included) so Undo restores exactly this.
-  const snapshot = items.map((item) => ({
+// What the current script shows (unsaved edits and order included), so an Undo restores exactly this.
+function snapshotNotebook() {
+  return [...els.notebookList.querySelectorAll(".highlight-item")].map((item) => ({
     text: item.querySelector(".highlight-text").value.trim() || item.highlight.text,
     articleId: item.highlight.article_id,
     articleTitle: item.highlight.article_title,
     articleUrl: item.highlight.article_url,
     feedTitle: item.highlight.feed_title,
   }));
+}
+
+// Re-adds a snapshot to a script: in order, in slices under the server's per-request cap.
+async function restoreSnippets(snapshot, scriptId) {
+  for (let i = 0; i < snapshot.length; i += RESTORE_SNIPPETS_PER_REQUEST) {
+    const items = snapshot.slice(i, i + RESTORE_SNIPPETS_PER_REQUEST);
+    await api("/api/highlights/bulk", { method: "POST", body: JSON.stringify({ items, scriptId }) });
+  }
+}
+
+function flushNotebookEdits() {
+  return Promise.all([...els.notebookList.querySelectorAll(".highlight-item")].map((item) => item.flushEdit?.()));
+}
+
+async function clearNotebook() {
+  const items = [...els.notebookList.querySelectorAll(".highlight-item")];
+  const scriptTitle = currentScript()?.title ?? "this script";
+  if (items.length === 0 || !confirm(`Clear all ${plural(items.length, "snippet")} from “${scriptTitle}”?`)) return;
+  const snapshot = snapshotNotebook();
+  const scriptId = scripts.currentId;
   try {
     await api("/api/highlights", {
       method: "DELETE",
@@ -1474,11 +1680,7 @@ async function clearNotebook() {
     label: "Undo",
     run: async () => {
       try {
-        // In order, in slices under the server's per-request cap; positions keep counting up.
-        for (let i = 0; i < snapshot.length; i += RESTORE_SNIPPETS_PER_REQUEST) {
-          const items = snapshot.slice(i, i + RESTORE_SNIPPETS_PER_REQUEST);
-          await api("/api/highlights/bulk", { method: "POST", body: JSON.stringify({ items }) });
-        }
+        await restoreSnippets(snapshot, scriptId);
       } catch (err) {
         toast(err.message, "error");
         return;
@@ -1522,6 +1724,12 @@ els.copyAllBtn.addEventListener("click", async () => {
 
 // --- Text selection → "Add to my list" ---
 
+function captureLabel() {
+  const title = currentScript()?.title;
+  if (!title) return "+ Add to my list";
+  return `+ Add to “${title.length > 24 ? `${title.slice(0, 23)}…` : title}”`;
+}
+
 function initSelectionCapture() {
   const btn = document.createElement("button");
   btn.className = "selection-add-btn";
@@ -1549,6 +1757,7 @@ function initSelectionCapture() {
     }
     btn.dataset.text = found.text;
     btn.range = found.range;
+    btn.textContent = captureLabel();
     btn.hidden = false;
     const { rect } = found;
     const width = btn.offsetWidth;
@@ -1593,7 +1802,7 @@ function initSelectionCapture() {
     btn.hidden = true;
     window.getSelection()?.removeAllRanges();
     try {
-      await api("/api/highlights", {
+      const created = await api("/api/highlights", {
         method: "POST",
         body: JSON.stringify({
           text,
@@ -1601,10 +1810,12 @@ function initSelectionCapture() {
           articleTitle: currentArticle?.title ?? null,
           articleUrl: currentArticle?.url ?? null,
           feedTitle: currentArticle?.feed_title ?? null,
+          scriptId: scripts.currentId,
         }),
       });
       if (range && savedSnippetHighlight) savedSnippetHighlight.add(range);
-      toast("Added to My List");
+      adjustScriptCount(created.script_id, 1);
+      toast(`Added to “${created.script_title ?? "My List"}”`);
     } catch (err) {
       toast(err.message, "error");
     }
@@ -1918,6 +2129,12 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
+  if (e.key === "Escape" && !els.scriptMenu.hidden) {
+    setScriptMenuOpen(false);
+    els.scriptMenuBtn.focus();
+    return;
+  }
+
   if (e.key === "Escape" && !els.readerPrefs.hidden) {
     setPrefsOpen(false);
     els.readerPrefsBtn.focus();
@@ -2064,6 +2281,7 @@ async function syncInBackground() {
     await loadFeeds();
     loadContinueReading();
     loadReadingStats().catch(() => {});
+    if (state.view !== "notebook") loadScripts().catch(() => {});
   } catch {
     return; // Offline or a blip; the next sync will catch up.
   }
@@ -2117,6 +2335,7 @@ async function init() {
   renderStaticFilters();
   initSelectionCapture();
   initNotebookReorder();
+  initScripts();
   initReaderPrefs();
   initPrompter();
   enterMobileScreen("list", "DisciplineFeed");
@@ -2126,6 +2345,8 @@ async function init() {
     await loadArticles(true);
     await loadContinueReading();
     loadReadingStats().catch(() => {});
+    // So the capture button can name the script snippets will go to.
+    loadScripts().catch(() => {});
   } catch (err) {
     toast(err.message, "error");
   }

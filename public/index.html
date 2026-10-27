@@ -193,6 +193,18 @@
       <div class="notebook-header">
         <div>
           <h2>My List</h2>
+          <div class="script-bar">
+            <select id="scriptSelect" class="script-select" aria-label="Script"></select>
+            <button id="newScriptBtn" class="toolbar-btn" title="Start another script">+ New</button>
+            <div class="script-menu-wrap">
+              <button id="scriptMenuBtn" class="toolbar-btn" title="Script options" aria-label="Script options" aria-haspopup="true" aria-expanded="false" aria-controls="scriptMenu">⋯</button>
+              <div id="scriptMenu" class="script-menu" hidden>
+                <button data-action="rename">Rename</button>
+                <button data-action="duplicate">Duplicate</button>
+                <button data-action="delete" class="danger">Delete script</button>
+              </div>
+            </div>
+          </div>
           <p class="notebook-subtitle">Snippets you've selected while reading, plus anything you jot down yourself — edit freely and drag to shape your script.</p>
           <p id="notebookStats" class="notebook-stats"></p>
         </div>
@@ -209,8 +221,8 @@
       </form>
       <div id="notebookList" class="notebook-list"></div>
       <div id="notebookEmpty" class="empty-state" hidden>
-        <p class="empty-state-title">Nothing here yet</p>
-        <p class="empty-state-body">Select text while reading an article and tap "Add to my list", or jot a note above.</p>
+        <p class="empty-state-title">This script is empty</p>
+        <p class="empty-state-body">Select text while reading an article and tap "+ Add to …", or jot a note above.</p>
       </div>
     </section>
   </div>

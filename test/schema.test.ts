@@ -83,4 +83,16 @@ test("migrations backfill existing rows", () => {
     db.prepare("SELECT day, article_id FROM reading_log").all().map((r) => ({ ...r })),
     [{ day: "2026-01-05", article_id: 1 }],
   );
+  // Existing snippets become one script called "My List", keeping their order.
+  assert.deepEqual(
+    db.prepare("SELECT id, title FROM scripts").all().map((r) => ({ ...r })),
+    [{ id: 1, title: "My List" }],
+  );
+  assert.deepEqual(
+    db.prepare("SELECT id, script_id FROM highlights ORDER BY position").all().map((r) => ({ ...r })),
+    [
+      { id: 7, script_id: 1 },
+      { id: 9, script_id: 1 },
+    ],
+  );
 });

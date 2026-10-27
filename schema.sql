@@ -48,8 +48,19 @@ CREATE TABLE IF NOT EXISTS highlights (
   article_url TEXT,
   feed_title TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  -- Manual order in My List (ascending); new snippets go to the end.
-  position INTEGER
+  -- Manual order within its script (ascending); new snippets go to the end.
+  position INTEGER,
+  -- The saved script this snippet belongs to (see scripts).
+  script_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_highlights_script ON highlights(script_id, position);
+
+-- Saved scripts, each an ordered list of highlights. New snippets go to the most recently selected one.
+CREATE TABLE IF NOT EXISTS scripts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  selected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 -- Keywords the user wants "badass" articles surfaced for, across all subscriptions.

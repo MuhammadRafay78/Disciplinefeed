@@ -20,6 +20,33 @@ interface Bindings {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+// Something each migration since 0005 adds that the code relies on. Migrations are applied by hand,
+// so the app checks for them and can tell the user exactly what's missing instead of failing oddly.
+const REQUIRED_SCHEMA: Array<{ migration: string; table: string; column?: string }> = [
+  { migration: "0005_sort_at_and_conditional_get.sql", table: "articles", column: "sort_at" },
+  { migration: "0005_sort_at_and_conditional_get.sql", table: "feeds", column: "etag" },
+  { migration: "0006_highlight_position.sql", table: "highlights", column: "position" },
+  { migration: "0007_article_text.sql", table: "articles", column: "content_text" },
+  { migration: "0008_reading_log.sql", table: "reading_log" },
+];
+
+app.get("/api/health", async (c) => {
+  const tables = [...new Set(REQUIRED_SCHEMA.map((r) => r.table))];
+  const results = await c.env.DB.batch<{ name: string }>(
+    tables.map((table) => c.env.DB.prepare(`PRAGMA table_info(${table})`)),
+  );
+  const columnsByTable = new Map(tables.map((table, i) => [table, new Set(results[i].results.map((r) => r.name))]));
+  const missing = [
+    ...new Set(
+      REQUIRED_SCHEMA.filter(({ table, column }) => {
+        const columns = columnsByTable.get(table)!;
+        return column ? !columns.has(column) : columns.size === 0;
+      }).map((r) => r.migration),
+    ),
+  ];
+  return c.json({ ok: missing.length === 0, missingMigrations: missing });
+});
+
 app.get("/api/feeds", async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT f.id, f.url, f.title, f.site_url, f.added_at, f.last_fetched_at, f.last_status,

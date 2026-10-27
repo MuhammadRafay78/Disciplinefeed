@@ -238,6 +238,18 @@
     </div>
   </div>
 
+  <div id="schemaBanner" class="schema-banner" role="alert" hidden>
+    <div>
+      <strong>The database needs updating.</strong>
+      Run these, then reload:
+      <pre id="schemaBannerCommands"></pre>
+    </div>
+    <div class="schema-banner-actions">
+      <button id="schemaBannerCopyBtn" class="toolbar-btn">Copy</button>
+      <button id="schemaBannerCloseBtn" class="toolbar-btn" aria-label="Dismiss">✕</button>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <div id="shortcutsDialog" class="dialog-backdrop" hidden>

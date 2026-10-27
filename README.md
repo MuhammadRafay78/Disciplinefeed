@@ -76,6 +76,10 @@ npx wrangler d1 execute disciplinefeed-db --remote --file=./migrations/<file>.sq
 
 These run with `d1 execute`, not `wrangler d1 migrations apply`, because the database predates migration tracking. Running one twice is harmless: it either does nothing or stops with a "duplicate column" error.
 
+If the deployed database is missing a migration the code needs, the app shows a banner listing the exact commands to run (it checks `/api/health`).
+
+**Adding a migration:** add the next-numbered file in `migrations/`, make the same change in `schema.sql` (`npm test` fails if a fresh `schema.sql` and the migration path ever differ), and add an entry to `REQUIRED_SCHEMA` in `src/index.ts` so the health check knows about it.
+
 ## Project layout
 
 ```

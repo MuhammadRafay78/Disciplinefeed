@@ -107,6 +107,10 @@ const els = {
   mobileTitle: document.getElementById("mobileTitle"),
   sidebar: document.querySelector(".sidebar"),
   toast: document.getElementById("toast"),
+  schemaBanner: document.getElementById("schemaBanner"),
+  schemaBannerCommands: document.getElementById("schemaBannerCommands"),
+  schemaBannerCopyBtn: document.getElementById("schemaBannerCopyBtn"),
+  schemaBannerCloseBtn: document.getElementById("schemaBannerCloseBtn"),
   shortcutsDialog: document.getElementById("shortcutsDialog"),
   shortcutsHintBtn: document.getElementById("shortcutsHintBtn"),
   shortcutsCloseBtn: document.getElementById("shortcutsCloseBtn"),
@@ -2062,6 +2066,34 @@ setInterval(() => {
   if (!document.hidden) syncInBackground();
 }, SYNC_INTERVAL_MS);
 
+// --- Database health: migrations are applied by hand, so say exactly which are missing ---
+
+async function checkSchema() {
+  let health;
+  try {
+    health = await api("/api/health");
+  } catch {
+    return;
+  }
+  if (health.ok) return;
+  els.schemaBannerCommands.textContent = health.missingMigrations
+    .map((file) => `npx wrangler d1 execute disciplinefeed-db --remote --file=./migrations/${file}`)
+    .join("\n");
+  els.schemaBanner.hidden = false;
+}
+
+els.schemaBannerCopyBtn.addEventListener("click", async () => {
+  try {
+    await copyToClipboard(els.schemaBannerCommands.textContent);
+    toast("Commands copied");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+els.schemaBannerCloseBtn.addEventListener("click", () => {
+  els.schemaBanner.hidden = true;
+});
+
 // --- Init ---
 
 async function init() {
@@ -2071,6 +2103,7 @@ async function init() {
   initReaderPrefs();
   initPrompter();
   enterMobileScreen("list", "DisciplineFeed");
+  checkSchema();
   try {
     await loadFeeds();
     await loadArticles(true);

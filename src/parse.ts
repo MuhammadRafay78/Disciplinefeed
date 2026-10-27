@@ -63,12 +63,72 @@ export function sortKeyFor(publishedAt: string | undefined, nowIso: string): str
   return publishedAt && publishedAt < nowIso ? publishedAt : nowIso;
 }
 
-function stripHtml(s?: string): string | undefined {
-  if (!s) return undefined;
-  const text = s
-    .replace(/<[^>]+>/g, " ")
+// The XML parser resolves XML's own entities, but feeds routinely carry HTML entities on top
+// (WordPress writes every apostrophe as &#8217;). This covers numeric references and the named
+// ones that show up in practice; anything else is left as written.
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: "\u00a0",
+  hellip: "…",
+  mdash: "—",
+  ndash: "–",
+  lsquo: "‘",
+  rsquo: "’",
+  sbquo: "‚",
+  ldquo: "“",
+  rdquo: "”",
+  bdquo: "„",
+  laquo: "«",
+  raquo: "»",
+  bull: "•",
+  middot: "·",
+  copy: "©",
+  reg: "®",
+  trade: "™",
+  deg: "°",
+  times: "×",
+  divide: "÷",
+  frac12: "½",
+  euro: "€",
+  pound: "£",
+  cent: "¢",
+  sect: "§",
+  para: "¶",
+  prime: "′",
+  Prime: "″",
+  shy: "",
+  zwj: "\u200d",
+  zwnj: "\u200c",
+};
+
+// Single pass, so "&amp;lt;" becomes the text "&lt;" rather than being decoded twice into "<".
+export function decodeEntities(s: string): string {
+  return s.replace(/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]*);/g, (match, name: string) => {
+    if (name[0] === "#") {
+      const code = name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : Number(name.slice(1));
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    return NAMED_ENTITIES[name] ?? match;
+  });
+}
+
+export function htmlToText(html: string): string {
+  return decodeEntities(html.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]+>/g, " "))
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function plainText(s?: string): string | undefined {
+  return s ? decodeEntities(s).trim() || undefined : undefined;
+}
+
+function stripHtml(s?: string): string | undefined {
+  if (!s) return undefined;
+  const text = htmlToText(s);
   if (!text) return undefined;
   return text.length > 500 ? `${text.slice(0, 500)}…` : text;
 }
@@ -98,16 +158,16 @@ export function parseFeed(xml: string, now: Date = new Date()): ParsedFeed {
     const channel = doc.rss.channel;
     const items = asArray<Record<string, unknown>>(channel.item);
     return {
-      title: textOf(channel.title) ?? "Untitled feed",
+      title: plainText(textOf(channel.title)) ?? "Untitled feed",
       siteUrl: safeHttpUrl(linkOf(channel.link)),
       articles: items.map((item): ParsedArticle => {
         const url = safeHttpUrl(linkOf(item.link)) ?? "";
         const publishedAt = parseDate(textOf(item.pubDate));
         return {
           guid: textOf(item.guid) ?? url ?? textOf(item.title) ?? crypto.randomUUID(),
-          title: textOf(item.title) ?? "Untitled",
+          title: plainText(textOf(item.title)) ?? "Untitled",
           url,
-          author: textOf(item["dc:creator"]) ?? textOf(item.author),
+          author: plainText(textOf(item["dc:creator"]) ?? textOf(item.author)),
           publishedAt,
           summary: stripHtml(textOf(item.description)),
           contentHtml: textOf(item["content:encoded"]) ?? textOf(item.description),
@@ -121,7 +181,7 @@ export function parseFeed(xml: string, now: Date = new Date()): ParsedFeed {
     const feed = doc.feed;
     const entries = asArray<Record<string, unknown>>(feed.entry);
     return {
-      title: textOf(feed.title) ?? "Untitled feed",
+      title: plainText(textOf(feed.title)) ?? "Untitled feed",
       siteUrl: safeHttpUrl(linkOf(feed.link)),
       articles: entries.map((entry): ParsedArticle => {
         const url = safeHttpUrl(linkOf(entry.link)) ?? "";
@@ -129,9 +189,9 @@ export function parseFeed(xml: string, now: Date = new Date()): ParsedFeed {
         const publishedAt = parseDate(textOf(entry.published) ?? textOf(entry.updated));
         return {
           guid: textOf(entry.id) ?? url ?? crypto.randomUUID(),
-          title: textOf(entry.title) ?? "Untitled",
+          title: plainText(textOf(entry.title)) ?? "Untitled",
           url,
-          author: authorObj ? textOf(authorObj.name) : undefined,
+          author: authorObj ? plainText(textOf(authorObj.name)) : undefined,
           publishedAt,
           summary: stripHtml(textOf(entry.summary)),
           contentHtml: textOf(entry.content) ?? textOf(entry.summary),

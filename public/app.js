@@ -563,6 +563,29 @@ function renderFilteredEmptyState() {
   els.filteredEmptyBody.textContent = body;
 }
 
+// Escapes text for HTML and wraps each case-insensitive occurrence of term in <mark>.
+function markTerm(text, term) {
+  if (!term) return escapeHtml(text);
+  const pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  let html = "";
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    html += `${escapeHtml(text.slice(last, match.index))}<mark>${escapeHtml(match[0])}</mark>`;
+    last = match.index + match[0].length;
+  }
+  return html + escapeHtml(text.slice(last));
+}
+
+// While searching, show where the article body matched if the summary doesn't already.
+function summaryHtml(article) {
+  const summary = article.summary || "";
+  const term = state.view === "feed" ? state.query : "";
+  if (term && article.match_excerpt && !summary.toLowerCase().includes(term.toLowerCase())) {
+    return markTerm(article.match_excerpt, term);
+  }
+  return markTerm(summary, term);
+}
+
 function renderArticleList(articles, append) {
   if (!append) els.articleList.innerHTML = "";
   for (const a of articles) {
@@ -578,8 +601,8 @@ function renderArticleList(articles, append) {
         ${a.is_saved ? '<span class="saved-mark" title="Saved">★</span>' : ""}
         ${scoreBadge}
       </div>
-      <p class="article-title">${escapeHtml(a.title)}</p>
-      <p class="article-summary">${escapeHtml(a.summary || "")}</p>
+      <p class="article-title">${markTerm(a.title, state.view === "feed" ? state.query : "")}</p>
+      <p class="article-summary">${summaryHtml(a)}</p>
       ${a.progress > 0.02 && a.progress < 0.95 ? `<div class="article-progress"><div class="article-progress-fill" style="width:${Math.round(a.progress * 100)}%"></div></div>` : ""}
     `;
     item.addEventListener("click", () => selectArticle(a.id));

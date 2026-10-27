@@ -489,6 +489,12 @@ kbd {
   margin-bottom: 6px;
   font-weight: 500;
 }
+.article-item mark {
+  background: color-mix(in srgb, var(--star) 38%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
 .article-item .saved-mark { color: var(--star); font-size: 11px; }
 .article-item .discover-score {
   margin-left: auto;

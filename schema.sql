@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS articles (
   fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
   -- Publish date clamped to fetch time (see sortKeyFor); what article lists are ordered by.
   sort_at TEXT,
+  -- Plain text of content_html, for search ('' when there is no body).
+  content_text TEXT,
   UNIQUE(feed_id, guid)
 );
 
@@ -34,6 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at DESC)
 CREATE INDEX IF NOT EXISTS idx_articles_feed ON articles(feed_id);
 CREATE INDEX IF NOT EXISTS idx_articles_sort ON articles(sort_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_feed_sort ON articles(feed_id, sort_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_articles_needs_text ON articles(id) WHERE content_text IS NULL;
 
 -- Snippets the user selects from articles, plus freeform notes, for drafting scripts.
 -- No FK to articles: notes should survive even if the source feed/article is later removed.

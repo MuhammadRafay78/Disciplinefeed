@@ -1,4 +1,4 @@
-import { parseFeed, sanitizeHtml, type ParsedArticle } from "./parse";
+import { decodeEntities, htmlToText, parseFeed, sanitizeHtml, type ParsedArticle } from "./parse";
 
 const FETCH_HEADERS = {
   "User-Agent":
@@ -110,8 +110,8 @@ async function upsertArticles(db: D1Database, feedId: number, articles: ParsedAr
       const contentHtml = article.contentHtml ? await sanitizeHtml(article.contentHtml) : null;
       return db
         .prepare(
-          `INSERT INTO articles (feed_id, guid, title, url, author, published_at, summary, content_html, sort_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO articles (feed_id, guid, title, url, author, published_at, summary, content_html, sort_at, content_text)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(feed_id, guid) DO NOTHING`,
         )
         .bind(
@@ -124,6 +124,7 @@ async function upsertArticles(db: D1Database, feedId: number, articles: ParsedAr
           article.summary ?? null,
           contentHtml,
           article.sortAt,
+          contentHtml ? htmlToText(contentHtml) : "",
         );
     }),
   );
@@ -206,4 +207,31 @@ export async function refreshAllFeeds(db: D1Database) {
 
   const totalNew = details.reduce((sum, d) => sum + d.newArticles, 0);
   return { totalNew, details };
+}
+
+// Kept small so a scheduled run stays well inside the Workers CPU budget.
+const TEXT_BACKFILL_BATCH = 50;
+
+// Articles stored before content_text existed get it filled in a batch per scheduled run. Their
+// titles and summaries were also saved before HTML entities were decoded, so fix those in the same
+// pass; content_text being NULL is what marks a row as not yet processed, so none is decoded twice.
+export async function backfillArticleText(db: D1Database): Promise<number> {
+  const { results } = await db
+    .prepare("SELECT id, title, summary, content_html FROM articles WHERE content_text IS NULL LIMIT ?")
+    .bind(TEXT_BACKFILL_BATCH)
+    .all<{ id: number; title: string; summary: string | null; content_html: string | null }>();
+  if (results.length === 0) return 0;
+  await db.batch(
+    results.map((row) =>
+      db
+        .prepare("UPDATE articles SET title = ?, summary = ?, content_text = ? WHERE id = ?")
+        .bind(
+          decodeEntities(row.title),
+          row.summary === null ? null : decodeEntities(row.summary),
+          row.content_html ? htmlToText(row.content_html) : "",
+          row.id,
+        ),
+    ),
+  );
+  return results.length;
 }

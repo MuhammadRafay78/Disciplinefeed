@@ -67,6 +67,7 @@ npx wrangler d1 execute disciplinefeed-db --remote --file=./migrations/<file>.sq
 | `0004_add_progress_updated_at.sql` | Continue Reading ordering |
 | `0005_sort_at_and_conditional_get.sql` | Publish-date ordering, cheaper feed refreshes |
 | `0006_highlight_position.sql` | Reordering in My List |
+| `0007_article_text.sql` | Full-text search (older articles are indexed in the background, 50 per refresh) |
 
 These run with `d1 execute`, not `wrangler d1 migrations apply`, because the database predates migration tracking. Running one twice is harmless: it either does nothing or stops with a "duplicate column" error.
 

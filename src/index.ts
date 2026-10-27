@@ -1,9 +1,17 @@
 import { Hono } from "hono";
-import { addFeed, FEED_REFRESH_COLUMNS, refreshAllFeeds, refreshFeed, type FeedToRefresh } from "./feeds";
+import {
+  addFeed,
+  backfillArticleText,
+  FEED_REFRESH_COLUMNS,
+  refreshAllFeeds,
+  refreshFeed,
+  type FeedToRefresh,
+} from "./feeds";
 import { likePattern, scoreArticle } from "./discover";
 import { findSubstackPublicationsForTopic } from "./discoverSources";
 import { buildOpml, type OpmlFeed } from "./opml";
 import { decodeCursor, encodeCursor } from "./pagination";
+import { shapeExcerpt } from "./search";
 import { sanitizeHtml } from "./parse";
 
 interface Bindings {
@@ -77,6 +85,9 @@ app.post("/api/refresh", async (c) => {
   return c.json(result);
 });
 
+const SEARCH_EXCERPT_LEAD = 70;
+const SEARCH_EXCERPT_LENGTH = 220;
+
 const ARTICLE_LIST_COLUMNS =
   "a.id, a.feed_id, a.title, a.url, a.author, a.published_at, a.summary, a.is_read, a.is_saved, a.progress, a.sort_at, f.title AS feed_title";
 
@@ -98,10 +109,14 @@ app.get("/api/articles", async (c) => {
   if (unread === "true") conditions.push("a.is_read = 0");
   if (savedOnly === "true") conditions.push("a.is_saved = 1");
   if (inProgress) conditions.push("a.progress > 0.02 AND a.progress < 0.95");
+  // Rows not yet backfilled have no content_text; until then their HTML stands in.
   if (search) {
     const pattern = likePattern(search);
-    conditions.push("(a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\' OR a.author LIKE ? ESCAPE '\\')");
-    params.push(pattern, pattern, pattern);
+    conditions.push(
+      `(a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\' OR a.author LIKE ? ESCAPE '\\'
+        OR COALESCE(a.content_text, a.content_html) LIKE ? ESCAPE '\\')`,
+    );
+    params.push(pattern, pattern, pattern, pattern);
   }
   if (cursor && !inProgress) {
     const decoded = decodeCursor(cursor);
@@ -112,8 +127,19 @@ app.get("/api/articles", async (c) => {
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const orderBy = inProgress ? "a.progress_updated_at DESC" : "a.sort_at DESC, a.id DESC";
+  // For searches, also return the stretch of body text around the first match. SQLite's lower()
+  // only folds ASCII, so positions in lower(text) and text line up.
+  const windowStart = `max(1, instr(lower(a.content_text), ?) - ${SEARCH_EXCERPT_LEAD})`;
+  const excerptColumns = search
+    ? `, CASE WHEN instr(lower(a.content_text), ?) > 0
+         THEN substr(a.content_text, ${windowStart}, ${SEARCH_EXCERPT_LENGTH}) END AS match_excerpt,
+       ${windowStart} AS excerpt_start,
+       length(a.content_text) AS text_length`
+    : "";
+  const term = search?.toLowerCase();
+  const selectParams = term ? [term, term, term] : [];
   const query = `
-    SELECT ${ARTICLE_LIST_COLUMNS}
+    SELECT ${ARTICLE_LIST_COLUMNS}${excerptColumns}
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
     ${where}
@@ -122,8 +148,14 @@ app.get("/api/articles", async (c) => {
   `;
   params.push(limit + 1);
 
-  type Row = Record<string, unknown> & { id: number; sort_at: string };
-  const listStmt = c.env.DB.prepare(query).bind(...params);
+  type Row = Record<string, unknown> & {
+    id: number;
+    sort_at: string;
+    match_excerpt?: string | null;
+    excerpt_start?: number;
+    text_length?: number;
+  };
+  const listStmt = c.env.DB.prepare(query).bind(...selectParams, ...params);
   // The first page also reports the newest article id that existed when the list was loaded,
   // so "mark all as read" can't sweep up articles a refresh delivered after the user looked.
   const [listResult, maxResult] = cursor
@@ -132,6 +164,13 @@ app.get("/api/articles", async (c) => {
   const results = listResult.results as Row[];
   const hasMore = results.length > limit;
   const page = hasMore ? results.slice(0, limit) : results;
+  if (search) {
+    for (const row of page) {
+      if (row.match_excerpt) row.match_excerpt = shapeExcerpt(row.match_excerpt, row.excerpt_start!, row.text_length!);
+      delete row.excerpt_start;
+      delete row.text_length;
+    }
+  }
   const last = page[page.length - 1];
   const nextCursor = hasMore && !inProgress ? encodeCursor(last.sort_at, last.id) : null;
   const maxId = maxResult ? ((maxResult.results[0]?.max_id as number | null) ?? 0) : undefined;
@@ -361,6 +400,6 @@ app.get("/api/discover/sources", async (c) => {
 export default {
   fetch: app.fetch,
   async scheduled(_event: ScheduledController, env: Bindings, ctx: ExecutionContext) {
-    ctx.waitUntil(refreshAllFeeds(env.DB));
+    ctx.waitUntil(Promise.all([refreshAllFeeds(env.DB), backfillArticleText(env.DB)]));
   },
 };

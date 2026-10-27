@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isSafeContentUrl, parseFeed, sortKeyFor } from "../src/parse.ts";
+import { decodeEntities, htmlToText, isSafeContentUrl, parseFeed, sortKeyFor } from "../src/parse.ts";
 
 test("isSafeContentUrl allows http(s), mailto and relative URLs", () => {
   for (const url of ["https://example.com/a", "http://x.y", "mailto:a@b.c", "/relative", "page.html", "#top", "?q=1"]) {
@@ -75,4 +75,27 @@ test("parseFeed reads Atom entries", () => {
 
 test("parseFeed rejects documents that aren't RSS or Atom", () => {
   assert.throws(() => parseFeed("<html><body>nope</body></html>"), /Unrecognized feed format/);
+});
+
+test("decodeEntities handles numeric and common named entities in one pass", () => {
+  assert.equal(decodeEntities("Don&#8217;t &amp; won&#x2019;t &mdash; &hellip;"), "Don’t & won’t — …");
+  assert.equal(decodeEntities("&amp;lt;b&amp;gt;"), "&lt;b&gt;");
+  assert.equal(decodeEntities("&unknownentity; &#0; & alone"), "&unknownentity; &#0; & alone");
+});
+
+test("htmlToText strips markup, decodes entities and collapses whitespace", () => {
+  assert.equal(
+    htmlToText("<p>Fish &amp; <b>chips</b></p>\n<style>p{}</style><p>Sit&nbsp;with   it.</p>"),
+    "Fish & chips Sit with it.",
+  );
+});
+
+test("parseFeed decodes HTML entities in titles and summaries", () => {
+  const xml = `<rss version="2.0"><channel><title>T</title>
+    <item><title>Don&#8217;t quit</title><link>https://x.test/1</link><guid>1</guid>
+      <description><![CDATA[<p>Fish &amp; chips &#8212; tasty</p>]]></description></item>
+  </channel></rss>`;
+  const [article] = parseFeed(xml).articles;
+  assert.equal(article.title, "Don’t quit");
+  assert.equal(article.summary, "Fish & chips — tasty");
 });

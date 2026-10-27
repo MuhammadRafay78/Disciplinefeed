@@ -7,6 +7,7 @@ A personal RSS reader for discipline, focus and self-improvement writing, plus a
 - Subscribe to any RSS/Atom feed or Substack (paste the site URL and the feed is found automatically). Feeds refresh every 30 minutes.
 - Move subscriptions in or out with **Import / Export** (OPML, the format every RSS reader understands), next to the Subscriptions heading.
 - Reader with reading progress, a **Continue Reading** list, saved articles, unread counts, search and mark-all-read.
+- A **reading streak** in the sidebar: consecutive days you've opened at least one article, plus the last 7 days at a glance.
 - **Discover**: track topic keywords to surface the best-matching articles across your subscriptions, and find new Substacks for a topic.
 - **My List**: select text while reading and tap **+ Add to my list**, or jot your own notes. Drag snippets into order, check the word count and estimated speaking time, then **Copy all** (or download as Markdown) to get a script draft with a sources list. **Clear** starts a fresh script, with Undo.
 - **Teleprompter**: read your My List script on camera. It scrolls at a words-per-minute pace you set, with a 3-2-1 countdown, tap or Space to pause, mirror mode for teleprompter glass, and keeps the phone screen awake while running.
@@ -71,6 +72,7 @@ npx wrangler d1 execute disciplinefeed-db --remote --file=./migrations/<file>.sq
 | `0005_sort_at_and_conditional_get.sql` | Publish-date ordering, cheaper feed refreshes |
 | `0006_highlight_position.sql` | Reordering in My List |
 | `0007_article_text.sql` | Full-text search (older articles are indexed in the background, 50 per refresh) |
+| `0008_reading_log.sql` | Reading streak |
 
 These run with `d1 execute`, not `wrangler d1 migrations apply`, because the database predates migration tracking. Running one twice is harmless: it either does nothing or stops with a "duplicate column" error.
 

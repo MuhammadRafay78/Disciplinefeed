@@ -191,6 +191,32 @@ body {
   line-height: 1.4;
 }
 
+.streak-card {
+  padding: 10px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  display: grid;
+  gap: 8px;
+}
+.streak-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.streak-count { font-size: 13px; font-weight: 700; color: var(--text); white-space: nowrap; }
+.streak-today { font-size: 11px; color: var(--text-muted); text-align: right; }
+.streak-dots { display: flex; justify-content: space-between; }
+.streak-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--border-soft);
+}
+.streak-dot.filled { background: var(--accent); }
+.streak-dot.today { box-shadow: 0 0 0 2px var(--panel-bg), 0 0 0 3.5px var(--accent); }
+
 .feed-list-divider {
   font-size: 10.5px;
   font-weight: 600;

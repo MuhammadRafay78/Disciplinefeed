@@ -58,3 +58,10 @@ CREATE TABLE IF NOT EXISTS topics (
   keyword TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- One row per article per (local) day it was opened; drives the reading streak.
+CREATE TABLE IF NOT EXISTS reading_log (
+  day TEXT NOT NULL,
+  article_id INTEGER NOT NULL,
+  PRIMARY KEY (day, article_id)
+);

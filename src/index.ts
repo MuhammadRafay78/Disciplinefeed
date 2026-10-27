@@ -231,14 +231,33 @@ app.get("/api/articles/:id", async (c) => {
     .bind(id)
     .first<Record<string, unknown>>();
   if (!article) return c.json({ error: "Article not found" }, 404);
-  if (!article.is_read) {
-    await c.env.DB.prepare("UPDATE articles SET is_read = 1 WHERE id = ?").bind(id).run();
-  }
+  const writes = [];
+  if (!article.is_read) writes.push(c.env.DB.prepare("UPDATE articles SET is_read = 1 WHERE id = ?").bind(id));
+  // The client sends its local date, since "today" for a streak depends on the reader's timezone.
+  const day = c.req.query("day");
+  const logsDay = day !== undefined && isCalendarDay(day);
+  if (logsDay) writes.push(c.env.DB.prepare("INSERT OR IGNORE INTO reading_log (day, article_id) VALUES (?, ?)").bind(day, id));
+  const results = writes.length ? await c.env.DB.batch(writes) : [];
+  article.first_read_today = logsDay && results[results.length - 1].meta.changes > 0;
   // Re-sanitize on the way out too, so rows stored before a sanitizer fix are covered.
   if (typeof article.content_html === "string") {
     article.content_html = await sanitizeHtml(article.content_html);
   }
   return c.json(article);
+});
+
+function isCalendarDay(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+}
+
+// Articles opened per day over the last ~10 weeks, for the reading streak.
+app.get("/api/stats/reading", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT day, COUNT(*) AS count FROM reading_log
+     WHERE day >= date('now', '-70 days')
+     GROUP BY day ORDER BY day`,
+  ).all<{ day: string; count: number }>();
+  return c.json({ days: results });
 });
 
 app.post("/api/articles/:id/read", async (c) => {

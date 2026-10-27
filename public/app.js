@@ -38,6 +38,10 @@ const els = {
   feedList: document.getElementById("feedList"),
   unreadTotal: document.getElementById("unreadTotal"),
   continueReadingSection: document.getElementById("continueReadingSection"),
+  streakCard: document.getElementById("streakCard"),
+  streakCount: document.getElementById("streakCount"),
+  streakToday: document.getElementById("streakToday"),
+  streakDots: document.getElementById("streakDots"),
   continueReadingList: document.getElementById("continueReadingList"),
   addFeedForm: document.getElementById("addFeedForm"),
   feedUrlInput: document.getElementById("feedUrlInput"),
@@ -864,7 +868,7 @@ async function selectArticle(id) {
 
   let article;
   try {
-    article = await api(`/api/articles/${id}`);
+    article = await api(`/api/articles/${id}?day=${localDay()}`);
   } catch (err) {
     if (token === selectRequestToken) toast(err.message, "error");
     return;
@@ -874,6 +878,7 @@ async function selectArticle(id) {
 
   // Fetching the article marks it read server-side; is_read here is its state from before that.
   if (!article.is_read) adjustUnread(article.feed_id, -1);
+  if (article.first_read_today) countReadToday();
   setListItemRead(id, true);
   currentArticle = { ...article, is_read: 1 };
 
@@ -1964,6 +1969,66 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("beforeunload", flushProgress);
 
+// --- Reading streak: consecutive local days with at least one article opened ---
+
+const STREAK_DOTS = 7;
+const reading = { days: new Map() }; // local "YYYY-MM-DD" -> articles opened that day
+
+function localDay(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function daysAgo(n) {
+  const date = new Date();
+  date.setDate(date.getDate() - n);
+  return date;
+}
+
+// A streak stays alive through today even before today's first article.
+function currentStreak() {
+  let offset = reading.days.has(localDay()) ? 0 : 1;
+  let streak = 0;
+  while (reading.days.has(localDay(daysAgo(offset)))) {
+    streak++;
+    offset++;
+  }
+  return streak;
+}
+
+async function loadReadingStats() {
+  const { days } = await api("/api/stats/reading");
+  reading.days = new Map(days.map((d) => [d.day, d.count]));
+  renderStreak();
+}
+
+function countReadToday() {
+  const today = localDay();
+  reading.days.set(today, (reading.days.get(today) ?? 0) + 1);
+  renderStreak();
+}
+
+function renderStreak() {
+  const today = reading.days.get(localDay()) ?? 0;
+  const streak = currentStreak();
+  els.streakCount.textContent = streak ? `🔥 ${streak}-day streak` : "Start a streak";
+  els.streakToday.textContent = today
+    ? `${plural(today, "article")} today`
+    : streak
+      ? "Read one today to keep it"
+      : "Read one article today";
+  els.streakDots.innerHTML = "";
+  for (let i = STREAK_DOTS - 1; i >= 0; i--) {
+    const date = daysAgo(i);
+    const count = reading.days.get(localDay(date)) ?? 0;
+    const dot = document.createElement("span");
+    dot.className = `streak-dot${count ? " filled" : ""}${i === 0 ? " today" : ""}`;
+    dot.title = `${date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}: ${plural(count, "article")}`;
+    els.streakDots.append(dot);
+  }
+  els.streakCard.hidden = false;
+}
+
 // --- Staying fresh: the scheduled job adds articles while the app sits open or in the background ---
 
 const SYNC_INTERVAL_MS = 5 * 60 * 1000;
@@ -1977,6 +2042,7 @@ async function syncInBackground() {
   try {
     await loadFeeds();
     loadContinueReading();
+    loadReadingStats().catch(() => {});
   } catch {
     return; // Offline or a blip; the next sync will catch up.
   }
@@ -2009,6 +2075,7 @@ async function init() {
     await loadFeeds();
     await loadArticles(true);
     await loadContinueReading();
+    loadReadingStats().catch(() => {});
   } catch (err) {
     toast(err.message, "error");
   }

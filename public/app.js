@@ -1224,10 +1224,17 @@ function readPrefs() {
   }
 }
 
+const THEME_COLORS = { light: "#f7f4ee", dark: "#16140f" };
+
 function applyPrefs(prefs) {
   const root = document.documentElement;
   if (prefs.theme === "light" || prefs.theme === "dark") root.dataset.theme = prefs.theme;
   else delete root.dataset.theme;
+  // Browser/OS chrome (status bar, installed app title bar) follows the chosen theme too.
+  document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {
+    const osScheme = meta.media.includes("dark") ? "dark" : "light";
+    meta.content = THEME_COLORS[prefs.theme === "light" || prefs.theme === "dark" ? prefs.theme : osScheme];
+  });
   if (prefs.font === "sans") root.dataset.readerFont = "sans";
   else delete root.dataset.readerFont;
   root.style.setProperty("--reader-font-size", `${prefs.textSize}px`);

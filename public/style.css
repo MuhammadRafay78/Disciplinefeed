@@ -79,6 +79,8 @@ body {
   display: grid;
   grid-template-columns: 252px 360px 1fr;
   height: 100vh;
+  /* dvh tracks the visible viewport, so mobile browser toolbars don't cover the bottom of a pane. */
+  height: 100dvh;
 }
 
 /* ---------- Sidebar ---------- */
@@ -1132,6 +1134,7 @@ body.reordering, body.reordering * { cursor: grabbing !important; user-select: n
   .app {
     grid-template-columns: 1fr;
     height: calc(100vh - 52px);
+    height: calc(100dvh - 52px);
     margin-top: 52px;
   }
 
